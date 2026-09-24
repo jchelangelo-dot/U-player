@@ -109,9 +109,6 @@ fun EqScreen(
     }
    }
   }
-  Text(selectedPreset.summary, color = Color.White, fontSize = 10.sp)
-  Text("추천 범위는 시작점입니다. 곡과 이어폰에 맞게 조금씩 조절하세요.", color = EqText, fontSize = 9.sp, modifier = Modifier.padding(top = 3.dp, bottom = 12.dp))
-
   EqResponseGraph(
    settings = settings,
    recommendedGainRanges = selectedPreset.gainRanges,
@@ -124,39 +121,13 @@ fun EqScreen(
    Modifier.fillMaxWidth().padding(top = 10.dp),
    verticalAlignment = Alignment.CenterVertically
   ) {
-   Column(Modifier.weight(1f)) {
-    Text("그래프 숫자와 아래 BAND 번호가 같은 점입니다.", color = Color.White, fontSize = 10.sp)
-    Text("좌우: 주파수  •  위아래: 강조/감소", color = EqText, fontSize = 9.sp, modifier = Modifier.padding(top = 3.dp))
-    Text("옅은 파란 영역: ${selectedPreset.label} 권장 GAIN", color = EqUltra, fontSize = 9.sp, modifier = Modifier.padding(top = 3.dp))
-   }
+   Text("옅은 파란 영역: ${selectedPreset.label} 권장 GAIN", color = EqUltra, fontSize = 9.sp, modifier = Modifier.weight(1f))
    TextButton(onClick = {
     onSettingsChanged(EqSettings())
    }) {
     Text("RESET ALL", color = EqUltra, fontSize = 11.sp)
    }
   }
-
-  Row(
-   Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 16.dp),
-   horizontalArrangement = Arrangement.spacedBy(4.dp)
-  ) {
-   settings.bands.forEachIndexed { index, band ->
-    TextButton(onClick = { selectedBand = index }) {
-     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-      Text(
-       (index + 1).toString().padStart(2, '0'),
-       color = if (selectedBand == index) EqUltra else EqText,
-       fontSize = 11.sp
-      )
-      Text(formatFrequency(band.frequencyHz), color = if (selectedBand == index) Color.White else EqText, fontSize = 9.sp)
-      Text(EqSettings.bandDefinitions[index].role, color = EqText, fontSize = 8.sp)
-      Text(formatCompactRange(selectedPreset.gainRanges[index]), color = if (selectedBand == index) EqUltra else EqText, fontSize = 8.sp)
-     }
-    }
-   }
-  }
-
-  HorizontalDivider(color = EqHairline, thickness = 0.5.dp)
   val band = settings.bands[selectedBand]
   val bandDefinition = EqSettings.bandDefinitions[selectedBand]
   val recommendedGain = selectedPreset.gainRanges[selectedBand]
@@ -300,6 +271,15 @@ private fun EqResponseGraph(
  ) {
   val width = size.width
   val height = size.height
+  pointLabelPaint.color = EqUltra.copy(alpha = 0.85f).toArgb()
+  drawContext.canvas.nativeCanvas.drawText("← 저역", 16f, 22f, pointLabelPaint)
+  val highLabel = "고역 →"
+  drawContext.canvas.nativeCanvas.drawText(
+   highLabel,
+   width - pointLabelPaint.measureText(highLabel) - 16f,
+   22f,
+   pointLabelPaint
+  )
   listOf(-12f, -6f, 0f, 6f, 12f).forEach { gain ->
    val y = gainToY(gain, height)
    drawLine(
@@ -424,9 +404,5 @@ private fun formatFrequency(frequency: Float): String = when {
 private fun formatGainRange(range: ClosedFloatingPointRange<Float>): String =
  "${signedDb(range.start)} – ${signedDb(range.endInclusive)}"
 
-private fun formatCompactRange(range: ClosedFloatingPointRange<Float>): String =
- "${signedNumber(range.start)}~${signedNumber(range.endInclusive)} dB"
-
-private fun signedNumber(value: Float): String = if (value > 0f) "+${value.roundToInt()}" else value.roundToInt().toString()
 
 private fun signedDb(value: Float): String = String.format(if (value >= 0f) "+%.1f dB" else "%.1f dB", value)

@@ -37,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -113,6 +114,7 @@ fun EqScreen(
 
   EqResponseGraph(
    settings = settings,
+   recommendedGainRanges = selectedPreset.gainRanges,
    selectedBand = selectedBand,
    onSelectedBandChanged = { selectedBand = it },
    onBandChanged = { index, band -> onSettingsChanged(settings.withBand(index, band)) }
@@ -125,6 +127,7 @@ fun EqScreen(
    Column(Modifier.weight(1f)) {
     Text("그래프 숫자와 아래 BAND 번호가 같은 점입니다.", color = Color.White, fontSize = 10.sp)
     Text("좌우: 주파수  •  위아래: 강조/감소", color = EqText, fontSize = 9.sp, modifier = Modifier.padding(top = 3.dp))
+    Text("옅은 파란 영역: ${selectedPreset.label} 권장 GAIN", color = EqUltra, fontSize = 9.sp, modifier = Modifier.padding(top = 3.dp))
    }
    TextButton(onClick = {
     onSettingsChanged(EqSettings())
@@ -170,6 +173,12 @@ fun EqScreen(
     )
     Text(bandDefinition.description, color = EqText, fontSize = 9.sp, modifier = Modifier.padding(top = 3.dp))
     Text(
+     "현재 ${formatFrequency(band.frequencyHz)} / ${signedDb(band.gainDb)}",
+     color = Color.White,
+     fontSize = 9.sp,
+     modifier = Modifier.padding(top = 4.dp)
+    )
+    Text(
      "${selectedPreset.label} 권장 GAIN  ${formatGainRange(recommendedGain)}",
      color = EqUltra,
      fontSize = 9.sp,
@@ -183,22 +192,6 @@ fun EqScreen(
    }
   }
 
-  EqSlider(
-   label = "FREQUENCY",
-   helpText = "이 점의 이동 범위: ${formatFrequency(bandDefinition.frequencyRange.start)}–${formatFrequency(bandDefinition.frequencyRange.endInclusive)}",
-   valueText = formatFrequency(band.frequencyHz),
-   value = log10(band.frequencyHz),
-   range = log10(bandDefinition.frequencyRange.start)..log10(bandDefinition.frequencyRange.endInclusive),
-   onValueChanged = { onSettingsChanged(settings.withBand(selectedBand, band.copy(frequencyHz = 10f.pow(it)))) }
-  )
-  EqSlider(
-   label = "GAIN",
-   helpText = "선택한 음역을 키우거나 줄임",
-   valueText = signedDb(band.gainDb),
-   value = band.gainDb,
-   range = -12f..12f,
-   onValueChanged = { onSettingsChanged(settings.withBand(selectedBand, band.copy(gainDb = it))) }
-  )
   EqSlider(
    label = "Q",
    helpText = "낮을수록 넓게, 높을수록 좁게 조절",
@@ -264,6 +257,7 @@ fun EqScreen(
 @Composable
 private fun EqResponseGraph(
  settings: EqSettings,
+ recommendedGainRanges: List<ClosedFloatingPointRange<Float>>,
  selectedBand: Int,
  onSelectedBandChanged: (Int) -> Unit,
  onBandChanged: (Int, EqBand) -> Unit
@@ -318,6 +312,20 @@ private fun EqResponseGraph(
   listOf(20f, 100f, 1_000f, 10_000f, 20_000f).forEach { frequency ->
    val x = frequencyToX(frequency, width)
    drawLine(EqHairline, Offset(x, 0f), Offset(x, height), strokeWidth = 0.7f)
+  }
+
+  settings.bands.forEachIndexed { index, band ->
+   val range = recommendedGainRanges[index]
+   val x = frequencyToX(band.frequencyHz, width)
+   val top = gainToY(range.endInclusive, height)
+   val bottom = gainToY(range.start, height)
+   val markerWidth = if (index == selectedBand) 22f else 14f
+   val markerHeight = (bottom - top).coerceAtLeast(3f)
+   drawRect(
+    color = EqUltra.copy(alpha = if (index == selectedBand) 0.28f else 0.13f),
+    topLeft = Offset(x - markerWidth / 2f, top - if (markerHeight == 3f) 1.5f else 0f),
+    size = Size(markerWidth, markerHeight)
+   )
   }
 
   val path = Path()

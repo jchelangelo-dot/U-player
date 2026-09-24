@@ -25,6 +25,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -37,6 +38,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 
 private val LyricsBackground = Color(0xFF02040A)
 private val LyricsUltra = Color(0xFF315CFF)
@@ -61,7 +63,9 @@ fun LyricsScreen(
  val repository = remember(context) { LyricsRepository(context.applicationContext) }
  var document by remember(trackId) { mutableStateOf(repository.load(trackId) ?: LyricsDocument()) }
  var editing by remember(trackId) { mutableStateOf(document.isEmpty) }
+ var combinedLyrics by remember(trackId) { mutableStateOf(document.toCombinedText()) }
  var displayMode by remember { mutableStateOf(LyricsDisplayMode.ALL) }
+ var readerFontSize by remember { mutableFloatStateOf(repository.loadFontSizeSp()) }
 
  BackHandler(onBack = onBack)
 
@@ -78,7 +82,12 @@ fun LyricsScreen(
     Text(artist, color = LyricsSecondary, fontSize = 10.sp, maxLines = 1)
    }
    TextButton(onClick = {
-    if (editing) repository.save(trackId, document)
+    if (editing) {
+     document = parseCombinedLyrics(combinedLyrics)
+     repository.save(trackId, document)
+    } else {
+     combinedLyrics = document.toCombinedText()
+    }
     editing = !editing
    }) {
     Text(if (editing) "SAVE" else "EDIT", color = LyricsUltra, fontSize = 11.sp)
@@ -88,8 +97,8 @@ fun LyricsScreen(
 
   if (editing) {
    LyricsEditor(
-    document = document,
-    onDocumentChanged = { document = it }
+    value = combinedLyrics,
+    onValueChanged = { combinedLyrics = it }
    )
   } else {
    Row(
@@ -102,35 +111,52 @@ fun LyricsScreen(
      }
     }
    }
-   LyricsReader(document, displayMode)
+   Row(
+    Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+    verticalAlignment = Alignment.CenterVertically
+   ) {
+    Text("TEXT SIZE", color = LyricsSecondary, fontSize = 9.sp, modifier = Modifier.weight(1f))
+    TextButton(onClick = {
+     readerFontSize = (readerFontSize - 2f).coerceAtLeast(12f)
+     repository.saveFontSizeSp(readerFontSize)
+    }) {
+     Text("−", color = LyricsUltra, fontSize = 18.sp)
+    }
+    Text("${readerFontSize.roundToInt()}", color = Color.White, fontSize = 10.sp)
+    TextButton(onClick = {
+     readerFontSize = (readerFontSize + 2f).coerceAtMost(26f)
+     repository.saveFontSizeSp(readerFontSize)
+    }) {
+     Text("+", color = LyricsUltra, fontSize = 18.sp)
+    }
+   }
+   LyricsReader(document, displayMode, readerFontSize)
   }
  }
 }
 
 @Composable
-private fun LyricsEditor(document: LyricsDocument, onDocumentChanged: (LyricsDocument) -> Unit) {
+private fun LyricsEditor(value: String, onValueChanged: (String) -> Unit) {
+ val nonEmptyLineCount = value.lines().count { it.isNotBlank() }
+ val completeGroups = nonEmptyLineCount / 3
+ val remainingLines = nonEmptyLineCount % 3
  Column(
   Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 18.dp),
   verticalArrangement = Arrangement.spacedBy(24.dp)
  ) {
-  Text("각 영역의 줄 순서를 맞추면 가사 화면에서 한 묶음으로 표시됩니다.", color = LyricsSecondary, fontSize = 10.sp)
-  LyricsTextEditor(
-   label = "JAPANESE ORIGINAL",
-   hint = "일본어 원문 가사를 붙여넣으세요.",
-   value = document.original,
-   onValueChanged = { onDocumentChanged(document.copy(original = it)) }
+  Text("COMBINED LYRICS", color = LyricsUltra, fontSize = 10.sp, letterSpacing = 1.2.sp)
+  Text("원문 → 한글 독음 → 한국어 번역 순서로 전체 가사를 붙여넣으세요.", color = Color.White, fontSize = 11.sp)
+  Text("빈 줄은 자동으로 무시하고 3줄씩 한 묶음으로 나눕니다.", color = LyricsSecondary, fontSize = 10.sp)
+  Text(
+   if (remainingLines == 0) "${completeGroups}개 가사 묶음 인식" else "${completeGroups}개 묶음 인식 · 마지막 ${remainingLines}줄 확인 필요",
+   color = if (remainingLines == 0) LyricsUltra else Color(0xFFFFB86B),
+   fontSize = 10.sp
   )
   LyricsTextEditor(
-   label = "KOREAN READING",
-   hint = "한글 독음을 같은 줄 순서로 입력하세요.",
-   value = document.pronunciation,
-   onValueChanged = { onDocumentChanged(document.copy(pronunciation = it)) }
-  )
-  LyricsTextEditor(
-   label = "KOREAN TRANSLATION",
-   hint = "한국어 번역을 같은 줄 순서로 입력하세요.",
-   value = document.translation,
-   onValueChanged = { onDocumentChanged(document.copy(translation = it)) }
+   label = "PASTE ALL",
+   hint = "深い闇解き放って…\n후카이 야미 토키하낫테…\n깊은 어둠을 떨쳐버리고…\n\n強く果てない未来へ\n츠요쿠 하테나이 미라이에\n강하고 끝없는 미래로",
+   value = value,
+   onValueChanged = onValueChanged
   )
  }
 }
@@ -149,7 +175,7 @@ private fun LyricsTextEditor(
    onValueChange = onValueChanged,
    textStyle = TextStyle(color = Color.White, fontSize = 14.sp, lineHeight = 22.sp),
    cursorBrush = SolidColor(LyricsUltra),
-   modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp).padding(top = 10.dp),
+   modifier = Modifier.fillMaxWidth().heightIn(min = 360.dp).padding(top = 10.dp),
    decorationBox = { innerTextField ->
     if (value.isEmpty()) Text(hint, color = LyricsSecondary, fontSize = 12.sp)
     innerTextField()
@@ -162,7 +188,7 @@ private fun LyricsTextEditor(
 private data class LyricsRow(val original: String, val pronunciation: String, val translation: String)
 
 @Composable
-private fun LyricsReader(document: LyricsDocument, mode: LyricsDisplayMode) {
+private fun LyricsReader(document: LyricsDocument, mode: LyricsDisplayMode, fontSize: Float) {
  val rows = remember(document) { document.toRows() }
  if (rows.all { it.original.isBlank() && it.pronunciation.isBlank() && it.translation.isBlank() }) {
   Column(
@@ -180,13 +206,25 @@ private fun LyricsReader(document: LyricsDocument, mode: LyricsDisplayMode) {
   items(rows) { row ->
    Column(Modifier.fillMaxWidth().padding(vertical = 14.dp)) {
     if (mode != LyricsDisplayMode.ORIGINAL_TRANSLATION || row.original.isNotBlank()) {
-     Text(row.original, color = Color.White, fontSize = 20.sp, lineHeight = 28.sp)
+     Text(row.original, color = Color.White, fontSize = fontSize.sp, lineHeight = (fontSize + 7f).sp)
     }
     if ((mode == LyricsDisplayMode.ALL || mode == LyricsDisplayMode.ORIGINAL_READING) && row.pronunciation.isNotBlank()) {
-     Text(row.pronunciation, color = LyricsUltra, fontSize = 13.sp, lineHeight = 20.sp, modifier = Modifier.padding(top = 5.dp))
+     Text(
+      row.pronunciation,
+      color = LyricsUltra,
+      fontSize = (fontSize - 3f).coerceAtLeast(10f).sp,
+      lineHeight = (fontSize + 3f).sp,
+      modifier = Modifier.padding(top = 5.dp)
+     )
     }
     if ((mode == LyricsDisplayMode.ALL || mode == LyricsDisplayMode.ORIGINAL_TRANSLATION) && row.translation.isNotBlank()) {
-     Text(row.translation, color = LyricsSecondary, fontSize = 14.sp, lineHeight = 21.sp, modifier = Modifier.padding(top = 5.dp))
+     Text(
+      row.translation,
+      color = LyricsSecondary,
+      fontSize = (fontSize - 2f).coerceAtLeast(10f).sp,
+      lineHeight = (fontSize + 4f).sp,
+      modifier = Modifier.padding(top = 5.dp)
+     )
     }
    }
   }
@@ -206,3 +244,19 @@ private fun LyricsDocument.toRows(): List<LyricsRow> {
   )
  }
 }
+
+private fun parseCombinedLyrics(text: String): LyricsDocument {
+ val lines = text.replace("\r\n", "\n").lines().map(String::trim).filter(String::isNotEmpty)
+ val groups = lines.chunked(3)
+ return LyricsDocument(
+  original = groups.joinToString("\n") { it.getOrElse(0) { "" } },
+  pronunciation = groups.joinToString("\n") { it.getOrElse(1) { "" } },
+  translation = groups.joinToString("\n") { it.getOrElse(2) { "" } }
+ )
+}
+
+private fun LyricsDocument.toCombinedText(): String = toRows()
+ .filterNot { it.original.isBlank() && it.pronunciation.isBlank() && it.translation.isBlank() }
+ .joinToString("\n\n") { row ->
+  listOf(row.original, row.pronunciation, row.translation).joinToString("\n")
+ }

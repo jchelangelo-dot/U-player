@@ -42,5 +42,11 @@ class LyricsRepository(context: Context) {
    .apply()
  }
 
+ fun loadFontSizeSp(): Float = preferences.getFloat("reader_font_size", 16f).coerceIn(12f, 26f)
+
+ fun saveFontSizeSp(size: Float) {
+  preferences.edit().putFloat("reader_font_size", size.coerceIn(12f, 26f)).apply()
+ }
+
  private fun key(trackId: String, field: String) = "track_${trackId}_$field"
 }

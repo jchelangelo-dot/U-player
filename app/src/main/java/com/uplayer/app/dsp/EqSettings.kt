@@ -30,7 +30,7 @@ data class EqBandDefinition(
 data class EqSettings(
  val enabled: Boolean = true,
  val preampDb: Float = 0f,
- val autoHeadroom: Boolean = true,
+ val autoHeadroom: Boolean = false,
  val limiterEnabled: Boolean = true,
  val preset: EqPreset = EqPreset.FLAT,
  val bands: List<EqBand> = defaultBands()
@@ -107,7 +107,11 @@ class EqSettingsStore(context: Context) {
   return EqSettings(
    enabled = preferences.getBoolean("enabled", true),
    preampDb = preferences.getFloat("preamp", 0f).coerceIn(-12f, 6f),
-   autoHeadroom = preferences.getBoolean("auto_headroom", true),
+   autoHeadroom = if (preferences.getBoolean("auto_headroom_default_off_migrated", false)) {
+    preferences.getBoolean("auto_headroom", false)
+   } else {
+    false
+   },
    limiterEnabled = preferences.getBoolean("limiter", true),
    preset = runCatching {
     EqPreset.valueOf(preferences.getString("preset", EqPreset.FLAT.name)!!)
@@ -122,6 +126,7 @@ class EqSettingsStore(context: Context) {
    putBoolean("enabled", settings.enabled)
    putFloat("preamp", settings.preampDb)
    putBoolean("auto_headroom", settings.autoHeadroom)
+   putBoolean("auto_headroom_default_off_migrated", true)
    putBoolean("limiter", settings.limiterEnabled)
    putString("preset", settings.preset.name)
    settings.bands.forEachIndexed { index, band ->
@@ -172,7 +177,7 @@ object EqCommand {
   return EqSettings(
    enabled = bundle.getBoolean(KEY_ENABLED, true),
    preampDb = bundle.getFloat(KEY_PREAMP, 0f).coerceIn(-12f, 6f),
-   autoHeadroom = bundle.getBoolean(KEY_AUTO_HEADROOM, true),
+   autoHeadroom = bundle.getBoolean(KEY_AUTO_HEADROOM, false),
    limiterEnabled = bundle.getBoolean(KEY_LIMITER, true),
    preset = runCatching {
     EqPreset.valueOf(bundle.getString(KEY_PRESET, EqPreset.FLAT.name))

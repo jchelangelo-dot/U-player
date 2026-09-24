@@ -71,6 +71,7 @@ import com.uplayer.app.dsp.EqCommand
 import com.uplayer.app.dsp.EqScreen
 import com.uplayer.app.dsp.EqSettings
 import com.uplayer.app.dsp.EqSettingsStore
+import com.uplayer.app.lyrics.LyricsScreen
 import com.uplayer.app.playback.PlaybackService
 import kotlinx.coroutines.delay
 import java.util.Locale
@@ -79,7 +80,7 @@ private val AppBackground = Color(0xFF02040A)
 private val Ultramarine = Color(0xFF315CFF)
 private val SecondaryText = Color(0xFF7D8495)
 
-private enum class AppScreen { LIBRARY, PLAYER, EQ }
+private enum class AppScreen { LIBRARY, PLAYER, EQ, LYRICS }
 
 class MainActivity : ComponentActivity() {
  private var controller by mutableStateOf<MediaController?>(null)
@@ -162,6 +163,12 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onRefresh:
  ) {
   Surface(Modifier.fillMaxSize(), color = AppBackground) {
    when (screen) {
+    AppScreen.LYRICS -> LyricsScreen(
+     trackId = playback.mediaId.orEmpty(),
+     title = playback.title ?: "Unknown Track",
+     artist = playback.artist ?: "Unknown Artist",
+     onBack = { screen = AppScreen.PLAYER }
+    )
     AppScreen.EQ -> EqScreen(
      settings = eqSettings,
      onSettingsChanged = ::updateEq,
@@ -172,7 +179,8 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onRefresh:
      playback = playback,
      eqEnabled = eqSettings.enabled,
      onBack = { screen = AppScreen.LIBRARY },
-     onOpenEq = { screen = AppScreen.EQ }
+     onOpenEq = { screen = AppScreen.EQ },
+     onOpenLyrics = { if (playback.hasMedia) screen = AppScreen.LYRICS }
     )
     AppScreen.LIBRARY -> LibraryScreen(
       tracks = tracks,
@@ -275,7 +283,8 @@ private fun PlayerScreen(
  playback: PlaybackUiState,
  eqEnabled: Boolean,
  onBack: () -> Unit,
- onOpenEq: () -> Unit
+ onOpenEq: () -> Unit,
+ onOpenLyrics: () -> Unit
 ) {
  Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 24.dp)) {
   Row(
@@ -297,7 +306,7 @@ private fun PlayerScreen(
    }
   }
 
-  AlbumArtPlaceholder()
+  AlbumArtPlaceholder(onClick = onOpenLyrics, enabled = playback.hasMedia)
 
   Column(Modifier.padding(top = 34.dp)) {
    Text(
@@ -396,9 +405,9 @@ private fun PlayerScreen(
 }
 
 @Composable
-private fun AlbumArtPlaceholder() {
+private fun AlbumArtPlaceholder(onClick: () -> Unit, enabled: Boolean) {
  Box(
-  Modifier.fillMaxWidth().aspectRatio(1f).background(Color(0xFF07133F)),
+  Modifier.fillMaxWidth().aspectRatio(1f).background(Color(0xFF07133F)).clickable(enabled = enabled, onClick = onClick),
   contentAlignment = Alignment.Center
  ) {
   Box(
@@ -411,11 +420,19 @@ private fun AlbumArtPlaceholder() {
     tint = Ultramarine,
     modifier = Modifier.size(84.dp)
    )
+   Text(
+    "TAP FOR LYRICS",
+    color = Ultramarine,
+    fontSize = 9.sp,
+    letterSpacing = 1.4.sp,
+    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 18.dp)
+   )
   }
  }
 }
 
 private data class PlaybackUiState(
+ val mediaId: String? = null,
  val title: String? = null,
  val artist: String? = null,
  val isPlaying: Boolean = false,
@@ -463,6 +480,7 @@ private fun Player?.toPlaybackUiState(): PlaybackUiState {
  if (this == null) return PlaybackUiState()
  val item = currentMediaItem
  return PlaybackUiState(
+  mediaId = item?.mediaId,
   title = item?.mediaMetadata?.title?.toString(),
   artist = item?.mediaMetadata?.artist?.toString(),
   isPlaying = isPlaying,

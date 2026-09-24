@@ -6,25 +6,58 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import androidx.media3.common.MediaItem
+import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -33,6 +66,12 @@ import com.google.common.util.concurrent.MoreExecutors
 import com.uplayer.app.library.AudioRepository
 import com.uplayer.app.library.Track
 import com.uplayer.app.playback.PlaybackService
+import kotlinx.coroutines.delay
+import java.util.Locale
+
+private val AppBackground = Color(0xFF02040A)
+private val Ultramarine = Color(0xFF315CFF)
+private val SecondaryText = Color(0xFF7D8495)
 
 class MainActivity : ComponentActivity() {
  private var controller by mutableStateOf<MediaController?>(null)
@@ -87,76 +126,334 @@ class MainActivity : ComponentActivity() {
  }
 }
 
-@Composable private fun UPlayerApp(tracks: List<Track>, player: Player?, onRefresh: () -> Unit) {
- val bg=Color(0xFF02040A); val ultra=Color(0xFF315CFF)
- var selectedTrack by remember { mutableStateOf<Track?>(null) }
+@Composable
+private fun UPlayerApp(tracks: List<Track>, player: Player?, onRefresh: () -> Unit) {
+ var showPlayer by remember { mutableStateOf(false) }
+ val playback = rememberPlaybackState(player)
 
- MaterialTheme(colorScheme=darkColorScheme(primary=ultra,background=bg,surface=bg)) {
-  Surface(Modifier.fillMaxSize(),color=bg) {
-   Column(Modifier.fillMaxSize().statusBarsPadding()) {
-    Row(
-     Modifier.fillMaxWidth().padding(horizontal=24.dp, vertical=18.dp),
-     verticalAlignment=Alignment.CenterVertically
-    ) {
-     Text("U-player",color=Color.White,fontSize=26.sp,modifier=Modifier.weight(1f))
-     TextButton(onClick=onRefresh) { Text("REFRESH",color=ultra,fontSize=11.sp) }
-    }
-    Text(
-     if (player == null) "CONNECTING PLAYER..." else "LIBRARY  •  " + tracks.size + " TRACKS",
-     color=ultra,fontSize=11.sp,modifier=Modifier.padding(horizontal=24.dp)
-    )
-    LazyColumn(Modifier.weight(1f).padding(top=12.dp)) {
-     items(tracks,key={it.id}) { track ->
-      Column(Modifier.fillMaxWidth().clickable(enabled = player != null) {
-       selectedTrack = track
-       player?.apply {
-        val item: MediaItem = track.asMediaItem()
-        setMediaItem(item)
-        prepare()
-        play()
-       }
-      }.padding(horizontal=24.dp,vertical=12.dp)) {
-       Text(track.title,color=if(player==null) Color(0xFF7D8495) else Color.White,maxLines=1)
-       Text(track.artist,color=Color(0xFF7D8495),fontSize=12.sp,maxLines=1)
+ BackHandler(enabled = showPlayer) { showPlayer = false }
+
+ MaterialTheme(
+  colorScheme = darkColorScheme(
+   primary = Ultramarine,
+   background = AppBackground,
+   surface = AppBackground
+  )
+ ) {
+  Surface(Modifier.fillMaxSize(), color = AppBackground) {
+   if (showPlayer) {
+    PlayerScreen(player = player, playback = playback, onBack = { showPlayer = false })
+   } else {
+    LibraryScreen(
+     tracks = tracks,
+     player = player,
+     playback = playback,
+     onRefresh = onRefresh,
+     onTrackSelected = { index ->
+      player?.apply {
+       setMediaItems(tracks.map(Track::asMediaItem), index, 0L)
+       prepare()
+       play()
       }
-     }
-    }
-    MiniPlayer(player,selectedTrack,ultra)
+      showPlayer = true
+     },
+     onOpenPlayer = { if (player?.currentMediaItem != null) showPlayer = true }
+    )
    }
   }
  }
 }
 
-@Composable private fun MiniPlayer(player: Player?, selectedTrack: Track?, ultra: Color) {
- var playing by remember { mutableStateOf(false) }
- var currentTitle by remember { mutableStateOf<String?>(null) }
- var currentArtist by remember { mutableStateOf<String?>(null) }
+@Composable
+private fun LibraryScreen(
+ tracks: List<Track>,
+ player: Player?,
+ playback: PlaybackUiState,
+ onRefresh: () -> Unit,
+ onTrackSelected: (Int) -> Unit,
+ onOpenPlayer: () -> Unit
+) {
+ Column(Modifier.fillMaxSize().statusBarsPadding()) {
+  Row(
+   Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 18.dp),
+   verticalAlignment = Alignment.CenterVertically
+  ) {
+   Text("U-player", color = Color.White, fontSize = 26.sp, modifier = Modifier.weight(1f))
+   TextButton(onClick = onRefresh) { Text("REFRESH", color = Ultramarine, fontSize = 11.sp) }
+  }
+  Text(
+   if (player == null) "CONNECTING PLAYER..." else "LIBRARY  •  ${tracks.size} TRACKS",
+   color = Ultramarine,
+   fontSize = 11.sp,
+   modifier = Modifier.padding(horizontal = 24.dp)
+  )
+  LazyColumn(Modifier.weight(1f).padding(top = 12.dp)) {
+   itemsIndexed(tracks, key = { _, track -> track.id }) { index, track ->
+    Column(
+     Modifier
+      .fillMaxWidth()
+      .clickable(enabled = player != null) { onTrackSelected(index) }
+      .padding(horizontal = 24.dp, vertical = 12.dp)
+    ) {
+     Text(
+      track.title,
+      color = if (player == null) SecondaryText else Color.White,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis
+     )
+     Text(track.artist, color = SecondaryText, fontSize = 12.sp, maxLines = 1)
+    }
+   }
+  }
+  MiniPlayer(player, playback, onOpenPlayer)
+ }
+}
+
+@Composable
+private fun MiniPlayer(player: Player?, playback: PlaybackUiState, onOpenPlayer: () -> Unit) {
+ val title = playback.title ?: if (player == null) "PLAYER CONNECTING" else "NO TRACK"
+ val artist = playback.artist ?: if (player == null) "Please wait" else "Select music from Library"
+
+ Row(
+  Modifier
+   .fillMaxWidth()
+   .background(Color(0xFF060A14))
+   .clickable(enabled = playback.hasMedia) { onOpenPlayer() }
+   .padding(horizontal = 20.dp, vertical = 14.dp),
+  verticalAlignment = Alignment.CenterVertically
+ ) {
+  Column(Modifier.weight(1f)) {
+   Text(title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+   Text(artist, color = SecondaryText, fontSize = 11.sp, maxLines = 1)
+  }
+  IconButton(
+   enabled = player != null && playback.hasMedia,
+   onClick = { togglePlayback(player) }
+  ) {
+   Icon(
+    if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+    contentDescription = if (playback.isPlaying) "Pause" else "Play",
+    tint = if (player == null || !playback.hasMedia) Color(0xFF343A48) else Ultramarine
+   )
+  }
+ }
+}
+
+@Composable
+private fun PlayerScreen(player: Player?, playback: PlaybackUiState, onBack: () -> Unit) {
+ Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 24.dp)) {
+  Row(
+   Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 22.dp),
+   verticalAlignment = Alignment.CenterVertically
+  ) {
+   IconButton(onClick = onBack) {
+    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Library", tint = Color.White)
+   }
+   Text(
+    "NOW PLAYING",
+    color = Ultramarine,
+    fontSize = 11.sp,
+    letterSpacing = 1.8.sp,
+    modifier = Modifier.padding(start = 8.dp)
+   )
+  }
+
+  AlbumArtPlaceholder()
+
+  Column(Modifier.padding(top = 34.dp)) {
+   Text(
+    playback.title ?: "NO TRACK",
+    color = Color.White,
+    fontSize = 25.sp,
+    fontWeight = FontWeight.Medium,
+    maxLines = 2,
+    overflow = TextOverflow.Ellipsis
+   )
+   Text(
+    playback.artist ?: "Unknown Artist",
+    color = SecondaryText,
+    fontSize = 14.sp,
+    modifier = Modifier.padding(top = 8.dp),
+    maxLines = 1,
+    overflow = TextOverflow.Ellipsis
+   )
+  }
+
+  Column(Modifier.padding(top = 28.dp)) {
+   Slider(
+    value = playback.positionMs.coerceIn(0L, playback.durationMs.coerceAtLeast(1L)).toFloat(),
+    onValueChange = { player?.seekTo(it.toLong()) },
+    valueRange = 0f..playback.durationMs.coerceAtLeast(1L).toFloat(),
+    enabled = player != null && playback.durationMs > 0L,
+    modifier = Modifier.fillMaxWidth()
+   )
+   Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+    Text(formatTime(playback.positionMs), color = SecondaryText, fontSize = 11.sp)
+    Text(formatTime(playback.durationMs), color = SecondaryText, fontSize = 11.sp)
+   }
+  }
+
+  Row(
+   Modifier.fillMaxWidth().padding(top = 28.dp),
+   horizontalArrangement = Arrangement.SpaceEvenly,
+   verticalAlignment = Alignment.CenterVertically
+  ) {
+   IconButton(onClick = { player?.seekToPreviousMediaItem() }, enabled = playback.hasPrevious) {
+    Icon(
+     Icons.Default.SkipPrevious,
+     contentDescription = "Previous track",
+     tint = controlColor(playback.hasPrevious),
+     modifier = Modifier.size(31.dp)
+    )
+   }
+   IconButton(
+    onClick = { togglePlayback(player) },
+    enabled = player != null && playback.hasMedia,
+    modifier = Modifier.size(68.dp)
+   ) {
+    Icon(
+     if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+     contentDescription = if (playback.isPlaying) "Pause" else "Play",
+     tint = controlColor(player != null && playback.hasMedia),
+     modifier = Modifier.size(50.dp)
+    )
+   }
+   IconButton(onClick = { player?.seekToNextMediaItem() }, enabled = playback.hasNext) {
+    Icon(
+     Icons.Default.SkipNext,
+     contentDescription = "Next track",
+     tint = controlColor(playback.hasNext),
+     modifier = Modifier.size(31.dp)
+    )
+   }
+  }
+
+  Row(
+   Modifier.fillMaxWidth().padding(top = 24.dp),
+   horizontalArrangement = Arrangement.SpaceBetween
+  ) {
+   IconButton(
+    onClick = { player?.shuffleModeEnabled = playback.shuffle.not() },
+    enabled = player != null && playback.hasMedia
+   ) {
+    Icon(
+     Icons.Default.Shuffle,
+     contentDescription = "Shuffle",
+     tint = if (playback.shuffle) Ultramarine else SecondaryText
+    )
+   }
+   IconButton(
+    onClick = { player?.repeatMode = nextRepeatMode(playback.repeatMode) },
+    enabled = player != null && playback.hasMedia
+   ) {
+    Icon(
+     if (playback.repeatMode == Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
+     contentDescription = "Repeat",
+     tint = if (playback.repeatMode == Player.REPEAT_MODE_OFF) SecondaryText else Ultramarine
+    )
+   }
+  }
+ }
+}
+
+@Composable
+private fun AlbumArtPlaceholder() {
+ Box(
+  Modifier.fillMaxWidth().aspectRatio(1f).background(Color(0xFF07133F)),
+  contentAlignment = Alignment.Center
+ ) {
+  Box(
+   Modifier.fillMaxSize().padding(1.dp).background(Color(0xFF091A59)),
+   contentAlignment = Alignment.Center
+  ) {
+   Icon(
+    Icons.Default.GraphicEq,
+    contentDescription = "Album art placeholder",
+    tint = Ultramarine,
+    modifier = Modifier.size(84.dp)
+   )
+  }
+ }
+}
+
+private data class PlaybackUiState(
+ val title: String? = null,
+ val artist: String? = null,
+ val isPlaying: Boolean = false,
+ val hasMedia: Boolean = false,
+ val positionMs: Long = 0L,
+ val durationMs: Long = 0L,
+ val hasPrevious: Boolean = false,
+ val hasNext: Boolean = false,
+ val repeatMode: Int = Player.REPEAT_MODE_OFF,
+ val shuffle: Boolean = false
+)
+
+@Composable
+private fun rememberPlaybackState(player: Player?): PlaybackUiState {
+ var state by remember(player) { mutableStateOf(player.toPlaybackUiState()) }
+ var position by remember(player) { mutableLongStateOf(player.safePosition()) }
 
  DisposableEffect(player) {
-  val listener=object:Player.Listener {
-   override fun onIsPlayingChanged(isPlaying:Boolean){ playing=isPlaying }
-   override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-    currentTitle=mediaItem?.mediaMetadata?.title?.toString()
-    currentArtist=mediaItem?.mediaMetadata?.artist?.toString()
+  val listener = object : Player.Listener {
+   override fun onEvents(player: Player, events: Player.Events) {
+    state = player.toPlaybackUiState()
+    position = player.safePosition()
    }
   }
   player?.addListener(listener)
-  playing=player?.isPlaying==true
-  currentTitle=player?.currentMediaItem?.mediaMetadata?.title?.toString()
-  currentArtist=player?.currentMediaItem?.mediaMetadata?.artist?.toString()
+  state = player.toPlaybackUiState()
+  position = player.safePosition()
   onDispose { player?.removeListener(listener) }
  }
 
- val title = currentTitle ?: selectedTrack?.title ?: if(player==null) "PLAYER CONNECTING" else "NO TRACK"
- val artist = currentArtist ?: selectedTrack?.artist ?: if(player==null) "Please wait" else "Select music from Library"
-
- Row(Modifier.fillMaxWidth().background(Color(0xFF060A14)).padding(16.dp),verticalAlignment=Alignment.CenterVertically) {
-  Column(Modifier.weight(1f)) {
-   Text(title,color=Color.White,maxLines=1)
-   Text(artist,color=Color(0xFF72798A),fontSize=11.sp,maxLines=1)
-  }
-  IconButton(enabled=player!=null,onClick={if(player?.isPlaying==true)player.pause() else player?.play()}) {
-   Icon(if(playing)Icons.Default.Pause else Icons.Default.PlayArrow,null,tint=if(player==null)Color(0xFF343A48) else ultra)
+ LaunchedEffect(player, state.hasMedia, state.isPlaying) {
+  while (player != null && state.hasMedia) {
+   position = player.safePosition()
+   if (player.duration != C.TIME_UNSET && player.duration >= 0L && player.duration != state.durationMs) {
+    state = player.toPlaybackUiState()
+   }
+   delay(if (state.isPlaying) 250L else 750L)
   }
  }
+
+ return state.copy(positionMs = position)
+}
+
+private fun Player?.toPlaybackUiState(): PlaybackUiState {
+ if (this == null) return PlaybackUiState()
+ val item = currentMediaItem
+ return PlaybackUiState(
+  title = item?.mediaMetadata?.title?.toString(),
+  artist = item?.mediaMetadata?.artist?.toString(),
+  isPlaying = isPlaying,
+  hasMedia = item != null,
+  positionMs = safePosition(),
+  durationMs = duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: 0L,
+  hasPrevious = hasPreviousMediaItem(),
+  hasNext = hasNextMediaItem(),
+  repeatMode = repeatMode,
+  shuffle = shuffleModeEnabled
+ )
+}
+
+private fun Player?.safePosition(): Long = this?.currentPosition?.coerceAtLeast(0L) ?: 0L
+
+private fun togglePlayback(player: Player?) {
+ if (player?.isPlaying == true) player.pause() else player?.play()
+}
+
+private fun nextRepeatMode(current: Int) = when (current) {
+ Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+ Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+ else -> Player.REPEAT_MODE_OFF
+}
+
+private fun controlColor(enabled: Boolean) = if (enabled) Ultramarine else Color(0xFF343A48)
+
+private fun formatTime(milliseconds: Long): String {
+ val totalSeconds = milliseconds.coerceAtLeast(0L) / 1_000L
+ val minutes = totalSeconds / 60L
+ val seconds = totalSeconds % 60L
+ return String.format(Locale.US, "%d:%02d", minutes, seconds)
 }

@@ -5,7 +5,8 @@ import android.content.Context
 data class LyricsDocument(
  val original: String = "",
  val pronunciation: String = "",
- val translation: String = ""
+ val translation: String = "",
+ val timestampsMs: List<Long> = emptyList()
 ) {
  val isEmpty: Boolean get() = original.isBlank() && pronunciation.isBlank() && translation.isBlank()
 }
@@ -30,7 +31,11 @@ class LyricsRepository(context: Context) {
   return LyricsDocument(
    original = preferences.getString(key(trackId, "original"), "").orEmpty(),
    pronunciation = preferences.getString(key(trackId, "pronunciation"), "").orEmpty(),
-   translation = preferences.getString(key(trackId, "translation"), "").orEmpty()
+   translation = preferences.getString(key(trackId, "translation"), "").orEmpty(),
+   timestampsMs = preferences.getString(key(trackId, "timestamps"), "")
+    .orEmpty()
+    .split(',')
+    .mapNotNull(String::toLongOrNull)
   )
  }
 
@@ -39,6 +44,7 @@ class LyricsRepository(context: Context) {
    .putString(key(trackId, "original"), document.original)
    .putString(key(trackId, "pronunciation"), document.pronunciation)
    .putString(key(trackId, "translation"), document.translation)
+   .putString(key(trackId, "timestamps"), document.timestampsMs.joinToString(","))
    .apply()
  }
 

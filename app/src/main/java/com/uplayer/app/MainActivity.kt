@@ -167,6 +167,8 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onRefresh:
      trackId = playback.mediaId.orEmpty(),
      title = playback.title ?: "Unknown Track",
      artist = playback.artist ?: "Unknown Artist",
+     positionMs = playback.positionMs,
+     durationMs = playback.durationMs,
      onBack = { screen = AppScreen.PLAYER }
     )
     AppScreen.EQ -> EqScreen(

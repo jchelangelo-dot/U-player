@@ -1,5 +1,6 @@
 package com.uplayer.app.dsp
 
+import android.graphics.Paint
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -39,8 +40,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -94,6 +98,19 @@ fun EqScreen(
   )
 
   Row(
+   Modifier.fillMaxWidth().padding(top = 10.dp),
+   verticalAlignment = Alignment.CenterVertically
+  ) {
+   Column(Modifier.weight(1f)) {
+    Text("그래프 숫자와 아래 BAND 번호가 같은 점입니다.", color = Color.White, fontSize = 10.sp)
+    Text("좌우: 주파수  •  위아래: 강조/감소", color = EqText, fontSize = 9.sp, modifier = Modifier.padding(top = 3.dp))
+   }
+   TextButton(onClick = { onSettingsChanged(EqSettings()) }) {
+    Text("RESET ALL", color = EqUltra, fontSize = 11.sp)
+   }
+  }
+
+  Row(
    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 16.dp),
    horizontalArrangement = Arrangement.spacedBy(4.dp)
   ) {
@@ -106,6 +123,7 @@ fun EqScreen(
        fontSize = 11.sp
       )
       Text(formatFrequency(band.frequencyHz), color = if (selectedBand == index) Color.White else EqText, fontSize = 9.sp)
+      Text(bandRole(band.frequencyHz), color = EqText, fontSize = 8.sp)
      }
     }
    }
@@ -113,16 +131,29 @@ fun EqScreen(
 
   HorizontalDivider(color = EqHairline, thickness = 0.5.dp)
   val band = settings.bands[selectedBand]
-  Text(
-   "BAND ${(selectedBand + 1).toString().padStart(2, '0')}",
-   color = EqUltra,
-   fontSize = 11.sp,
-   letterSpacing = 1.5.sp,
-   modifier = Modifier.padding(top = 20.dp)
-  )
+  Row(
+   Modifier.fillMaxWidth().padding(top = 12.dp),
+   verticalAlignment = Alignment.CenterVertically
+  ) {
+   Column(Modifier.weight(1f)) {
+    Text(
+     "BAND ${(selectedBand + 1).toString().padStart(2, '0')}  •  ${bandRole(band.frequencyHz)}",
+     color = EqUltra,
+     fontSize = 11.sp,
+     letterSpacing = 1.2.sp
+    )
+    Text(bandRoleDescription(band.frequencyHz), color = EqText, fontSize = 9.sp, modifier = Modifier.padding(top = 3.dp))
+   }
+   TextButton(onClick = {
+    onSettingsChanged(settings.withBand(selectedBand, EqSettings.defaultBands()[selectedBand]))
+   }) {
+    Text("RESET BAND", color = EqText, fontSize = 10.sp)
+   }
+  }
 
   EqSlider(
    label = "FREQUENCY",
+   helpText = "어느 음역을 조절할지 선택",
    valueText = formatFrequency(band.frequencyHz),
    value = log10(band.frequencyHz),
    range = log10(20f)..log10(20_000f),
@@ -130,6 +161,7 @@ fun EqScreen(
   )
   EqSlider(
    label = "GAIN",
+   helpText = "선택한 음역을 키우거나 줄임",
    valueText = signedDb(band.gainDb),
    value = band.gainDb,
    range = -12f..12f,
@@ -137,6 +169,7 @@ fun EqScreen(
   )
   EqSlider(
    label = "Q",
+   helpText = "낮을수록 넓게, 높을수록 좁게 조절",
    valueText = String.format("%.2f", band.q),
    value = log10(band.q),
    range = log10(0.2f)..log10(10f),
@@ -157,6 +190,7 @@ fun EqScreen(
   Text("GAIN STAGING", color = EqUltra, fontSize = 11.sp, letterSpacing = 1.5.sp, modifier = Modifier.padding(top = 20.dp))
   EqSlider(
    label = "PREAMP",
+   helpText = "EQ 전체 출력 음량을 미리 조절",
    valueText = signedDb(settings.preampDb),
    value = settings.preampDb,
    range = -12f..6f,
@@ -182,9 +216,12 @@ fun EqScreen(
   )
 
   Row(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 32.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-   TextButton(onClick = { onSettingsChanged(EqSettings()) }) {
-    Text("RESET FLAT", color = EqText, fontSize = 11.sp)
-   }
+   Text(
+    "RESET ALL은 모든 점과 설정을 기본값으로 되돌립니다.",
+    color = EqText,
+    fontSize = 9.sp,
+    modifier = Modifier.weight(1f).padding(top = 14.dp)
+   )
    TextButton(onClick = { onSettingsChanged(settings.copy(enabled = !settings.enabled)) }) {
     Text(if (settings.enabled) "A/B: EQ" else "A/B: ORIGINAL", color = EqUltra, fontSize = 11.sp)
    }
@@ -202,6 +239,12 @@ private fun EqResponseGraph(
  val currentSettings by rememberUpdatedState(settings)
  val currentBandChanged by rememberUpdatedState(onBandChanged)
  val currentSelectionChanged by rememberUpdatedState(onSelectedBandChanged)
+ val density = LocalDensity.current
+ val pointLabelPaint = remember(density) {
+  Paint(Paint.ANTI_ALIAS_FLAG).apply {
+   textSize = with(density) { 9.sp.toPx() }
+  }
+ }
  Canvas(
   Modifier
    .fillMaxWidth()
@@ -264,6 +307,13 @@ private fun EqResponseGraph(
     center = point
    )
    if (index == selectedBand) drawCircle(EqUltra, radius = 13f, center = point, style = Stroke(width = 1f))
+   pointLabelPaint.color = (if (index == selectedBand) Color.White else EqText).toArgb()
+   drawContext.canvas.nativeCanvas.drawText(
+    (index + 1).toString().padStart(2, '0'),
+    point.x.coerceIn(15f, width - 15f) - 7f,
+    (point.y - 11f).coerceAtLeast(12f),
+    pointLabelPaint
+   )
   }
  }
 }
@@ -271,14 +321,18 @@ private fun EqResponseGraph(
 @Composable
 private fun EqSlider(
  label: String,
+ helpText: String,
  valueText: String,
  value: Float,
  range: ClosedFloatingPointRange<Float>,
  onValueChanged: (Float) -> Unit
 ) {
  Column(Modifier.padding(top = 14.dp)) {
-  Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-   Text(label, color = EqText, fontSize = 11.sp)
+  Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+   Column(Modifier.weight(1f)) {
+    Text(label, color = Color.White, fontSize = 11.sp)
+    Text(helpText, color = EqText, fontSize = 9.sp, modifier = Modifier.padding(top = 3.dp))
+   }
    Text(valueText, color = Color.White, fontSize = 11.sp)
   }
   Slider(value = value, onValueChange = onValueChanged, valueRange = range, modifier = Modifier.fillMaxWidth())
@@ -325,6 +379,28 @@ private fun yToGain(y: Float, height: Float): Float = (12f - (y / height).coerce
 private fun formatFrequency(frequency: Float): String = when {
  frequency >= 1_000f -> String.format("%.1fk", frequency / 1_000f).replace(".0k", "k")
  else -> "${frequency.roundToInt()} Hz"
+}
+
+private fun bandRole(frequency: Float): String = when {
+ frequency < 60f -> "초저역"
+ frequency < 150f -> "저역"
+ frequency < 400f -> "저중역"
+ frequency < 1_000f -> "중역"
+ frequency < 2_500f -> "중고역"
+ frequency < 6_000f -> "존재감"
+ frequency < 12_000f -> "고역"
+ else -> "공기감"
+}
+
+private fun bandRoleDescription(frequency: Float): String = when {
+ frequency < 60f -> "킥의 깊이와 아주 낮은 베이스에 영향을 줍니다."
+ frequency < 150f -> "베이스와 킥의 무게감에 영향을 줍니다."
+ frequency < 400f -> "보컬과 악기의 두께·따뜻함에 영향을 줍니다."
+ frequency < 1_000f -> "보컬과 기타의 중심적인 음색에 영향을 줍니다."
+ frequency < 2_500f -> "보컬·기타의 선명함과 공격감에 영향을 줍니다."
+ frequency < 6_000f -> "스네어 어택과 보컬의 존재감에 영향을 줍니다."
+ frequency < 12_000f -> "심벌과 디테일, 밝기에 영향을 줍니다."
+ else -> "공간감과 반짝이는 느낌에 영향을 줍니다."
 }
 
 private fun signedDb(value: Float): String = String.format(if (value >= 0f) "+%.1f dB" else "%.1f dB", value)

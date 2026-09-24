@@ -35,30 +35,62 @@ import com.uplayer.app.playback.PlaybackService
 class MainActivity : ComponentActivity() {
  private var controller by mutableStateOf<MediaController?>(null)
  private var tracks by mutableStateOf<List<Track>>(emptyList())
- private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { if (it) tracks = AudioRepository(this).loadTracks() }
+ private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+  if (it) refreshLibrary()
+ }
+
  override fun onCreate(savedInstanceState: Bundle?) {
   super.onCreate(savedInstanceState)
-  connectController(); requestAudioAndLoad()
-  setContent { UPlayerApp(tracks, controller) }
+  connectController()
+  requestAudioAndLoad()
+  setContent { UPlayerApp(tracks, controller, ::refreshLibrary) }
  }
+
+ override fun onResume() {
+  super.onResume()
+  if (hasAudioPermission()) refreshLibrary()
+ }
+
  private fun connectController() {
   val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
   val future = MediaController.Builder(this, token).buildAsync()
   future.addListener({ controller = future.get() }, MoreExecutors.directExecutor())
  }
+
+ private fun audioPermission() =
+  if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
+  else Manifest.permission.READ_EXTERNAL_STORAGE
+
+ private fun hasAudioPermission() =
+  ContextCompat.checkSelfPermission(this, audioPermission()) == PackageManager.PERMISSION_GRANTED
+
  private fun requestAudioAndLoad() {
-  val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
-  if (ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED) tracks = AudioRepository(this).loadTracks() else permissionLauncher.launch(permission)
+  if (hasAudioPermission()) refreshLibrary() else permissionLauncher.launch(audioPermission())
  }
- override fun onDestroy() { controller?.release(); controller = null; super.onDestroy() }
+
+ private fun refreshLibrary() {
+  tracks = AudioRepository(this).loadTracks()
+ }
+
+ override fun onDestroy() {
+  controller?.release()
+  controller = null
+  super.onDestroy()
+ }
 }
 
-@Composable private fun UPlayerApp(tracks: List<Track>, player: Player?) {
+@Composable private fun UPlayerApp(tracks: List<Track>, player: Player?, onRefresh: () -> Unit) {
  val bg=Color(0xFF02040A); val ultra=Color(0xFF315CFF)
  MaterialTheme(colorScheme=darkColorScheme(primary=ultra,background=bg,surface=bg)) {
   Surface(Modifier.fillMaxSize(),color=bg) {
    Column(Modifier.fillMaxSize().statusBarsPadding()) {
-    Text("U-player",color=Color.White,fontSize=26.sp,modifier=Modifier.padding(24.dp))
+    Row(
+     Modifier.fillMaxWidth().padding(horizontal=24.dp, vertical=18.dp),
+     verticalAlignment=Alignment.CenterVertically
+    ) {
+     Text("U-player",color=Color.White,fontSize=26.sp,modifier=Modifier.weight(1f))
+     TextButton(onClick=onRefresh) { Text("REFRESH",color=ultra,fontSize=11.sp) }
+    }
     Text("LIBRARY  •  " + tracks.size + " TRACKS",color=ultra,fontSize=11.sp,modifier=Modifier.padding(horizontal=24.dp))
     LazyColumn(Modifier.weight(1f).padding(top=12.dp)) {
      items(tracks,key={it.id}) { track ->

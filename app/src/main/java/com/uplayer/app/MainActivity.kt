@@ -24,9 +24,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import com.uplayer.app.library.AudioRepository
 import com.uplayer.app.library.Track
@@ -35,6 +37,8 @@ import com.uplayer.app.playback.PlaybackService
 class MainActivity : ComponentActivity() {
  private var controller by mutableStateOf<MediaController?>(null)
  private var tracks by mutableStateOf<List<Track>>(emptyList())
+ private var controllerFuture: ListenableFuture<MediaController>? = null
+
  private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
   if (it) refreshLibrary()
  }
@@ -53,8 +57,11 @@ class MainActivity : ComponentActivity() {
 
  private fun connectController() {
   val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
-  val future = MediaController.Builder(this, token).buildAsync()
-  future.addListener({ controller = future.get() }, MoreExecutors.directExecutor())
+  controllerFuture = MediaController.Builder(this, token).buildAsync().also { future ->
+   future.addListener({
+    runCatching { future.get() }.onSuccess { controller = it }
+   }, MoreExecutors.directExecutor())
+  }
  }
 
  private fun audioPermission() =
@@ -73,7 +80,8 @@ class MainActivity : ComponentActivity() {
  }
 
  override fun onDestroy() {
-  controller?.release()
+  controllerFuture?.let { MediaController.releaseFuture(it) }
+  controllerFuture = null
   controller = null
   super.onDestroy()
  }
@@ -81,6 +89,8 @@ class MainActivity : ComponentActivity() {
 
 @Composable private fun UPlayerApp(tracks: List<Track>, player: Player?, onRefresh: () -> Unit) {
  val bg=Color(0xFF02040A); val ultra=Color(0xFF315CFF)
+ var selectedTrack by remember { mutableStateOf<Track?>(null) }
+
  MaterialTheme(colorScheme=darkColorScheme(primary=ultra,background=bg,surface=bg)) {
   Surface(Modifier.fillMaxSize(),color=bg) {
    Column(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -91,37 +101,62 @@ class MainActivity : ComponentActivity() {
      Text("U-player",color=Color.White,fontSize=26.sp,modifier=Modifier.weight(1f))
      TextButton(onClick=onRefresh) { Text("REFRESH",color=ultra,fontSize=11.sp) }
     }
-    Text("LIBRARY  •  " + tracks.size + " TRACKS",color=ultra,fontSize=11.sp,modifier=Modifier.padding(horizontal=24.dp))
+    Text(
+     if (player == null) "CONNECTING PLAYER..." else "LIBRARY  •  " + tracks.size + " TRACKS",
+     color=ultra,fontSize=11.sp,modifier=Modifier.padding(horizontal=24.dp)
+    )
     LazyColumn(Modifier.weight(1f).padding(top=12.dp)) {
      items(tracks,key={it.id}) { track ->
-      Column(Modifier.fillMaxWidth().clickable {
-       player?.apply { setMediaItems(tracks.map{it.asMediaItem()},tracks.indexOf(track),0); prepare(); play() }
+      Column(Modifier.fillMaxWidth().clickable(enabled = player != null) {
+       selectedTrack = track
+       player?.apply {
+        val item: MediaItem = track.asMediaItem()
+        setMediaItem(item)
+        prepare()
+        play()
+       }
       }.padding(horizontal=24.dp,vertical=12.dp)) {
-       Text(track.title,color=Color.White,maxLines=1)
+       Text(track.title,color=if(player==null) Color(0xFF7D8495) else Color.White,maxLines=1)
        Text(track.artist,color=Color(0xFF7D8495),fontSize=12.sp,maxLines=1)
       }
      }
     }
-    MiniPlayer(player,ultra)
+    MiniPlayer(player,selectedTrack,ultra)
    }
   }
  }
 }
 
-@Composable private fun MiniPlayer(player: Player?, ultra: Color) {
- var playing by remember { mutableStateOf(player?.isPlaying==true) }
+@Composable private fun MiniPlayer(player: Player?, selectedTrack: Track?, ultra: Color) {
+ var playing by remember { mutableStateOf(false) }
+ var currentTitle by remember { mutableStateOf<String?>(null) }
+ var currentArtist by remember { mutableStateOf<String?>(null) }
+
  DisposableEffect(player) {
-  val listener=object:Player.Listener { override fun onIsPlayingChanged(isPlaying:Boolean){playing=isPlaying} }
-  player?.addListener(listener); playing=player?.isPlaying==true
+  val listener=object:Player.Listener {
+   override fun onIsPlayingChanged(isPlaying:Boolean){ playing=isPlaying }
+   override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+    currentTitle=mediaItem?.mediaMetadata?.title?.toString()
+    currentArtist=mediaItem?.mediaMetadata?.artist?.toString()
+   }
+  }
+  player?.addListener(listener)
+  playing=player?.isPlaying==true
+  currentTitle=player?.currentMediaItem?.mediaMetadata?.title?.toString()
+  currentArtist=player?.currentMediaItem?.mediaMetadata?.artist?.toString()
   onDispose { player?.removeListener(listener) }
  }
+
+ val title = currentTitle ?: selectedTrack?.title ?: if(player==null) "PLAYER CONNECTING" else "NO TRACK"
+ val artist = currentArtist ?: selectedTrack?.artist ?: if(player==null) "Please wait" else "Select music from Library"
+
  Row(Modifier.fillMaxWidth().background(Color(0xFF060A14)).padding(16.dp),verticalAlignment=Alignment.CenterVertically) {
   Column(Modifier.weight(1f)) {
-   Text(player?.mediaMetadata?.title?.toString()?:"NO TRACK",color=Color.White,maxLines=1)
-   Text(player?.mediaMetadata?.artist?.toString()?:"Select music from Library",color=Color(0xFF72798A),fontSize=11.sp)
+   Text(title,color=Color.White,maxLines=1)
+   Text(artist,color=Color(0xFF72798A),fontSize=11.sp,maxLines=1)
   }
-  IconButton(onClick={if(player?.isPlaying==true)player.pause() else player?.play()}) {
-   Icon(if(playing)Icons.Default.Pause else Icons.Default.PlayArrow,null,tint=ultra)
+  IconButton(enabled=player!=null,onClick={if(player?.isPlaying==true)player.pause() else player?.play()}) {
+   Icon(if(playing)Icons.Default.Pause else Icons.Default.PlayArrow,null,tint=if(player==null)Color(0xFF343A48) else ultra)
   }
  }
 }

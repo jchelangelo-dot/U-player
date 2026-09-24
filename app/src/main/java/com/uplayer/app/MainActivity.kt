@@ -52,6 +52,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -61,10 +62,15 @@ import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import androidx.media3.session.SessionCommand
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import com.uplayer.app.library.AudioRepository
 import com.uplayer.app.library.Track
+import com.uplayer.app.dsp.EqCommand
+import com.uplayer.app.dsp.EqScreen
+import com.uplayer.app.dsp.EqSettings
+import com.uplayer.app.dsp.EqSettingsStore
 import com.uplayer.app.playback.PlaybackService
 import kotlinx.coroutines.delay
 import java.util.Locale
@@ -72,6 +78,8 @@ import java.util.Locale
 private val AppBackground = Color(0xFF02040A)
 private val Ultramarine = Color(0xFF315CFF)
 private val SecondaryText = Color(0xFF7D8495)
+
+private enum class AppScreen { LIBRARY, PLAYER, EQ }
 
 class MainActivity : ComponentActivity() {
  private var controller by mutableStateOf<MediaController?>(null)
@@ -127,11 +135,23 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun UPlayerApp(tracks: List<Track>, player: Player?, onRefresh: () -> Unit) {
- var showPlayer by remember { mutableStateOf(false) }
+private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onRefresh: () -> Unit) {
+ var screen by remember { mutableStateOf(AppScreen.LIBRARY) }
  val playback = rememberPlaybackState(player)
+ val context = LocalContext.current
+ val eqStore = remember(context) { EqSettingsStore(context.applicationContext) }
+ var eqSettings by remember(eqStore) { mutableStateOf(eqStore.load()) }
 
- BackHandler(enabled = showPlayer) { showPlayer = false }
+ fun updateEq(settings: EqSettings) {
+  eqSettings = settings
+  eqStore.save(settings)
+  player?.sendCustomCommand(
+   SessionCommand(EqCommand.ACTION_UPDATE, Bundle.EMPTY),
+   EqCommand.toBundle(settings)
+  )
+ }
+
+ BackHandler(enabled = screen == AppScreen.PLAYER) { screen = AppScreen.LIBRARY }
 
  MaterialTheme(
   colorScheme = darkColorScheme(
@@ -141,24 +161,34 @@ private fun UPlayerApp(tracks: List<Track>, player: Player?, onRefresh: () -> Un
   )
  ) {
   Surface(Modifier.fillMaxSize(), color = AppBackground) {
-   if (showPlayer) {
-    PlayerScreen(player = player, playback = playback, onBack = { showPlayer = false })
-   } else {
-    LibraryScreen(
-     tracks = tracks,
+   when (screen) {
+    AppScreen.EQ -> EqScreen(
+     settings = eqSettings,
+     onSettingsChanged = ::updateEq,
+     onBack = { screen = AppScreen.PLAYER }
+    )
+    AppScreen.PLAYER -> PlayerScreen(
      player = player,
      playback = playback,
-     onRefresh = onRefresh,
-     onTrackSelected = { index ->
-      player?.apply {
-       setMediaItems(tracks.map(Track::asMediaItem), index, 0L)
-       prepare()
-       play()
-      }
-      showPlayer = true
-     },
-     onOpenPlayer = { if (player?.currentMediaItem != null) showPlayer = true }
+     eqEnabled = eqSettings.enabled,
+     onBack = { screen = AppScreen.LIBRARY },
+     onOpenEq = { screen = AppScreen.EQ }
     )
+    AppScreen.LIBRARY -> LibraryScreen(
+      tracks = tracks,
+      player = player,
+      playback = playback,
+      onRefresh = onRefresh,
+      onTrackSelected = { index ->
+       player?.apply {
+        setMediaItems(tracks.map(Track::asMediaItem), index, 0L)
+        prepare()
+        play()
+       }
+       screen = AppScreen.PLAYER
+      },
+      onOpenPlayer = { if (player?.currentMediaItem != null) screen = AppScreen.PLAYER }
+     )
    }
   }
  }
@@ -240,7 +270,13 @@ private fun MiniPlayer(player: Player?, playback: PlaybackUiState, onOpenPlayer:
 }
 
 @Composable
-private fun PlayerScreen(player: Player?, playback: PlaybackUiState, onBack: () -> Unit) {
+private fun PlayerScreen(
+ player: Player?,
+ playback: PlaybackUiState,
+ eqEnabled: Boolean,
+ onBack: () -> Unit,
+ onOpenEq: () -> Unit
+) {
  Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 24.dp)) {
   Row(
    Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 22.dp),
@@ -254,8 +290,11 @@ private fun PlayerScreen(player: Player?, playback: PlaybackUiState, onBack: () 
     color = Ultramarine,
     fontSize = 11.sp,
     letterSpacing = 1.8.sp,
-    modifier = Modifier.padding(start = 8.dp)
-   )
+    modifier = Modifier.padding(start = 8.dp).weight(1f)
+    )
+   TextButton(onClick = onOpenEq) {
+    Text(if (eqEnabled) "EQ ON" else "EQ OFF", color = if (eqEnabled) Ultramarine else SecondaryText, fontSize = 11.sp)
+   }
   }
 
   AlbumArtPlaceholder()

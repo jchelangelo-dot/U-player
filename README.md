@@ -10,6 +10,6 @@ Android local music player focused on high-quality listening, parametric EQ, and
 5. Presets and local cache
 
 ## Current milestone
-Core Player scaffold: MediaStore library scan, Media3 ExoPlayer, MediaSessionService background playback, and initial dark ultramarine UI.
+Milestone 3: MediaStore library scan, Media3 background playback, full Player controls, and a working 10-band parametric EQ audio processor. The EQ supports frequency, gain, Q, peak/low-shelf/high-shelf filters, preamp, automatic headroom, output limiting, A/B bypass, persistent settings, and a draggable response graph.
 
 Open the repository root in Android Studio, sync Gradle, grant audio permission, and run on an Android device.

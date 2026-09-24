@@ -19,11 +19,20 @@ data class EqBand(
  val type: EqFilterType = EqFilterType.PEAK
 )
 
+data class EqBandDefinition(
+ val role: String,
+ val description: String,
+ val defaultFrequencyHz: Float,
+ val frequencyRange: ClosedFloatingPointRange<Float>,
+ val defaultType: EqFilterType = EqFilterType.PEAK
+)
+
 data class EqSettings(
  val enabled: Boolean = true,
  val preampDb: Float = 0f,
  val autoHeadroom: Boolean = true,
  val limiterEnabled: Boolean = true,
+ val preset: EqPreset = EqPreset.FLAT,
  val bands: List<EqBand> = defaultBands()
 ) {
  val headroomDb: Float
@@ -33,25 +42,57 @@ data class EqSettings(
   get() = preampDb - headroomDb
 
  companion object {
-  private val frequencies = listOf(31f, 62f, 125f, 250f, 500f, 1_000f, 2_000f, 4_000f, 8_000f, 16_000f)
+  val bandDefinitions = listOf(
+   EqBandDefinition("초저역", "킥의 깊이와 아주 낮은 베이스", 40f, 20f..80f, EqFilterType.LOW_SHELF),
+   EqBandDefinition("저역", "베이스와 킥의 무게감", 100f, 60f..180f),
+   EqBandDefinition("저중역", "보컬과 악기의 두께·먹먹함", 250f, 150f..500f),
+   EqBandDefinition("중역", "보컬과 기타의 중심 음색", 630f, 350f..1_200f),
+   EqBandDefinition("중고역", "보컬·기타의 선명함", 1_600f, 800f..3_000f),
+   EqBandDefinition("존재감", "스네어 어택과 보컬의 존재감", 4_000f, 2_000f..7_000f),
+   EqBandDefinition("고역", "심벌과 디테일·밝기", 8_000f, 5_000f..12_000f),
+   EqBandDefinition("공기감", "공간감과 반짝이는 느낌", 14_000f, 9_000f..20_000f, EqFilterType.HIGH_SHELF)
+  )
+  val bandCount: Int get() = bandDefinitions.size
 
-  fun defaultBands(): List<EqBand> = frequencies.mapIndexed { index, frequency ->
+  fun defaultBands(): List<EqBand> = bandDefinitions.map { definition ->
    EqBand(
-    frequencyHz = frequency,
-    type = when (index) {
-     0 -> EqFilterType.LOW_SHELF
-     9 -> EqFilterType.HIGH_SHELF
-     else -> EqFilterType.PEAK
-    }
+    frequencyHz = definition.defaultFrequencyHz,
+    type = definition.defaultType
    )
   }
  }
+}
+
+private fun gainRanges(vararg values: Pair<Float, Float>) = values.map { it.first..it.second }
+
+enum class EqPreset(
+ val label: String,
+ val summary: String,
+ val gainRanges: List<ClosedFloatingPointRange<Float>>
+) {
+ FLAT("FLAT", "원음 기준", gainRanges(0f to 0f, 0f to 0f, 0f to 0f, 0f to 0f, 0f to 0f, 0f to 0f, 0f to 0f, 0f to 0f)),
+ POP("POP", "저역과 선명도를 가볍게 강조", gainRanges(1f to 3f, 1f to 3f, -1f to 1f, -1f to 1f, 1f to 2f, 1f to 3f, 1f to 2f, 0f to 2f)),
+ VOCAL("VOCAL", "저역을 정리하고 목소리를 앞으로", gainRanges(-3f to -1f, -2f to 0f, -1f to 1f, 1f to 3f, 2f to 4f, 1f to 3f, 0f to 2f, 0f to 1f)),
+ HEAVY_METAL("HEAVY METAL", "킥·기타 어택과 심벌을 강조", gainRanges(1f to 3f, 2f to 4f, -3f to -1f, -1f to 1f, 1f to 3f, 2f to 4f, 1f to 3f, 0f to 2f)),
+ JAZZ("JAZZ", "자연스러운 저역과 악기 질감", gainRanges(-2f to 0f, 0f to 2f, 0f to 2f, -1f to 1f, 0f to 2f, 0f to 2f, 0f to 2f, 0f to 2f)),
+ DANCE("DANCE", "서브베이스와 고역 에너지를 강조", gainRanges(3f to 5f, 2f to 4f, -2f to 0f, -2f to 0f, 0f to 2f, 1f to 3f, 2f to 4f, 1f to 3f)),
+ CLASSICAL("CLASSICAL", "균형을 유지하며 공간감을 강조", gainRanges(-1f to 1f, 0f to 2f, -1f to 1f, 0f to 2f, 0f to 2f, -1f to 1f, 0f to 2f, 1f to 3f));
+
+ fun settings(): EqSettings = EqSettings(
+  preset = this,
+  bands = EqSettings.defaultBands().mapIndexed { index, band ->
+   val range = gainRanges[index]
+   band.copy(gainDb = (range.start + range.endInclusive) / 2f)
+  }
+ )
+
 }
 
 class EqSettingsStore(context: Context) {
  private val preferences = context.getSharedPreferences("uplayer_eq", Context.MODE_PRIVATE)
 
  fun load(): EqSettings {
+  if (preferences.getInt("schema_version", 0) != SCHEMA_VERSION) return EqSettings()
   val defaults = EqSettings.defaultBands()
   val bands = defaults.mapIndexed { index, default ->
    EqBand(
@@ -61,23 +102,28 @@ class EqSettingsStore(context: Context) {
     type = runCatching {
      EqFilterType.valueOf(preferences.getString("band_${index}_type", default.type.name)!!)
     }.getOrDefault(default.type)
-   ).sanitized()
+   ).sanitized(index)
   }
   return EqSettings(
    enabled = preferences.getBoolean("enabled", true),
    preampDb = preferences.getFloat("preamp", 0f).coerceIn(-12f, 6f),
    autoHeadroom = preferences.getBoolean("auto_headroom", true),
    limiterEnabled = preferences.getBoolean("limiter", true),
+   preset = runCatching {
+    EqPreset.valueOf(preferences.getString("preset", EqPreset.FLAT.name)!!)
+   }.getOrDefault(EqPreset.FLAT),
    bands = bands
   )
  }
 
  fun save(settings: EqSettings) {
   preferences.edit().apply {
+   putInt("schema_version", SCHEMA_VERSION)
    putBoolean("enabled", settings.enabled)
    putFloat("preamp", settings.preampDb)
    putBoolean("auto_headroom", settings.autoHeadroom)
    putBoolean("limiter", settings.limiterEnabled)
+   putString("preset", settings.preset.name)
    settings.bands.forEachIndexed { index, band ->
     putFloat("band_${index}_frequency", band.frequencyHz)
     putFloat("band_${index}_gain", band.gainDb)
@@ -85,6 +131,10 @@ class EqSettingsStore(context: Context) {
     putString("band_${index}_type", band.type.name)
    }
   }.apply()
+ }
+
+ private companion object {
+  const val SCHEMA_VERSION = 2
  }
 }
 
@@ -94,6 +144,7 @@ object EqCommand {
  private const val KEY_PREAMP = "preamp"
  private const val KEY_AUTO_HEADROOM = "auto_headroom"
  private const val KEY_LIMITER = "limiter"
+ private const val KEY_PRESET = "preset"
  private const val KEY_FREQUENCIES = "frequencies"
  private const val KEY_GAINS = "gains"
  private const val KEY_Q_VALUES = "q_values"
@@ -104,6 +155,7 @@ object EqCommand {
   putFloat(KEY_PREAMP, settings.preampDb)
   putBoolean(KEY_AUTO_HEADROOM, settings.autoHeadroom)
   putBoolean(KEY_LIMITER, settings.limiterEnabled)
+  putString(KEY_PRESET, settings.preset.name)
   putFloatArray(KEY_FREQUENCIES, settings.bands.map { it.frequencyHz }.toFloatArray())
   putFloatArray(KEY_GAINS, settings.bands.map { it.gainDb }.toFloatArray())
   putFloatArray(KEY_Q_VALUES, settings.bands.map { it.q }.toFloatArray())
@@ -115,26 +167,33 @@ object EqCommand {
   val gains = bundle.getFloatArray(KEY_GAINS) ?: return null
   val qValues = bundle.getFloatArray(KEY_Q_VALUES) ?: return null
   val types = bundle.getIntArray(KEY_TYPES) ?: return null
-  if (frequencies.size != 10 || gains.size != 10 || qValues.size != 10 || types.size != 10) return null
+  val count = EqSettings.bandCount
+  if (frequencies.size != count || gains.size != count || qValues.size != count || types.size != count) return null
   return EqSettings(
    enabled = bundle.getBoolean(KEY_ENABLED, true),
    preampDb = bundle.getFloat(KEY_PREAMP, 0f).coerceIn(-12f, 6f),
    autoHeadroom = bundle.getBoolean(KEY_AUTO_HEADROOM, true),
    limiterEnabled = bundle.getBoolean(KEY_LIMITER, true),
-   bands = List(10) { index ->
+   preset = runCatching {
+    EqPreset.valueOf(bundle.getString(KEY_PRESET, EqPreset.FLAT.name))
+   }.getOrDefault(EqPreset.FLAT),
+   bands = List(count) { index ->
     EqBand(
      frequencyHz = frequencies[index],
      gainDb = gains[index],
      q = qValues[index],
      type = EqFilterType.entries.getOrElse(types[index]) { EqFilterType.PEAK }
-    ).sanitized()
+    ).sanitized(index)
    }
   )
  }
 }
 
-private fun EqBand.sanitized() = copy(
- frequencyHz = frequencyHz.coerceIn(20f, 20_000f),
+internal fun EqBand.sanitized(index: Int): EqBand {
+ val definition = EqSettings.bandDefinitions[index]
+ return copy(
+ frequencyHz = frequencyHz.coerceIn(definition.frequencyRange.start, definition.frequencyRange.endInclusive),
  gainDb = gainDb.coerceIn(-12f, 12f),
  q = q.coerceIn(0.2f, 10f)
-)
+ )
+}

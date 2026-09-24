@@ -64,6 +64,7 @@ fun EqScreen(
  onBack: () -> Unit
 ) {
  var selectedBand by remember { mutableIntStateOf(0) }
+ val selectedPreset = settings.preset
  BackHandler(onBack = onBack)
 
  Column(
@@ -83,12 +84,32 @@ fun EqScreen(
    }
    Column(Modifier.weight(1f).padding(start = 8.dp)) {
     Text("PARAMETRIC EQ", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Medium)
-    Text("10 BAND  •  REAL-TIME DSP", color = EqUltra, fontSize = 10.sp, letterSpacing = 1.4.sp)
+    Text("8 BAND  •  REAL-TIME DSP", color = EqUltra, fontSize = 10.sp, letterSpacing = 1.4.sp)
    }
    TextButton(onClick = { onSettingsChanged(settings.copy(enabled = !settings.enabled)) }) {
     Text(if (settings.enabled) "EQ ON" else "ORIGINAL", color = if (settings.enabled) EqUltra else EqText)
    }
   }
+
+  Text("RECOMMENDED STARTING POINTS", color = EqUltra, fontSize = 10.sp, letterSpacing = 1.2.sp)
+  Row(
+   Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 6.dp),
+   horizontalArrangement = Arrangement.spacedBy(4.dp)
+  ) {
+   EqPreset.entries.forEach { preset ->
+    TextButton(onClick = {
+     onSettingsChanged(preset.settings())
+    }) {
+     Text(
+      preset.label,
+      color = if (selectedPreset == preset) Color.White else EqText,
+      fontSize = 10.sp
+     )
+    }
+   }
+  }
+  Text(selectedPreset.summary, color = Color.White, fontSize = 10.sp)
+  Text("추천 범위는 시작점입니다. 곡과 이어폰에 맞게 조금씩 조절하세요.", color = EqText, fontSize = 9.sp, modifier = Modifier.padding(top = 3.dp, bottom = 12.dp))
 
   EqResponseGraph(
    settings = settings,
@@ -105,7 +126,9 @@ fun EqScreen(
     Text("그래프 숫자와 아래 BAND 번호가 같은 점입니다.", color = Color.White, fontSize = 10.sp)
     Text("좌우: 주파수  •  위아래: 강조/감소", color = EqText, fontSize = 9.sp, modifier = Modifier.padding(top = 3.dp))
    }
-   TextButton(onClick = { onSettingsChanged(EqSettings()) }) {
+   TextButton(onClick = {
+    onSettingsChanged(EqSettings())
+   }) {
     Text("RESET ALL", color = EqUltra, fontSize = 11.sp)
    }
   }
@@ -123,7 +146,8 @@ fun EqScreen(
        fontSize = 11.sp
       )
       Text(formatFrequency(band.frequencyHz), color = if (selectedBand == index) Color.White else EqText, fontSize = 9.sp)
-      Text(bandRole(band.frequencyHz), color = EqText, fontSize = 8.sp)
+      Text(EqSettings.bandDefinitions[index].role, color = EqText, fontSize = 8.sp)
+      Text(formatCompactRange(selectedPreset.gainRanges[index]), color = if (selectedBand == index) EqUltra else EqText, fontSize = 8.sp)
      }
     }
    }
@@ -131,21 +155,29 @@ fun EqScreen(
 
   HorizontalDivider(color = EqHairline, thickness = 0.5.dp)
   val band = settings.bands[selectedBand]
+  val bandDefinition = EqSettings.bandDefinitions[selectedBand]
+  val recommendedGain = selectedPreset.gainRanges[selectedBand]
   Row(
    Modifier.fillMaxWidth().padding(top = 12.dp),
    verticalAlignment = Alignment.CenterVertically
   ) {
    Column(Modifier.weight(1f)) {
     Text(
-     "BAND ${(selectedBand + 1).toString().padStart(2, '0')}  •  ${bandRole(band.frequencyHz)}",
+     "BAND ${(selectedBand + 1).toString().padStart(2, '0')}  •  ${bandDefinition.role}",
      color = EqUltra,
      fontSize = 11.sp,
      letterSpacing = 1.2.sp
     )
-    Text(bandRoleDescription(band.frequencyHz), color = EqText, fontSize = 9.sp, modifier = Modifier.padding(top = 3.dp))
+    Text(bandDefinition.description, color = EqText, fontSize = 9.sp, modifier = Modifier.padding(top = 3.dp))
+    Text(
+     "${selectedPreset.label} 권장 GAIN  ${formatGainRange(recommendedGain)}",
+     color = EqUltra,
+     fontSize = 9.sp,
+     modifier = Modifier.padding(top = 4.dp)
+    )
    }
    TextButton(onClick = {
-    onSettingsChanged(settings.withBand(selectedBand, EqSettings.defaultBands()[selectedBand]))
+    onSettingsChanged(settings.withBand(selectedBand, selectedPreset.settings().bands[selectedBand]))
    }) {
     Text("RESET BAND", color = EqText, fontSize = 10.sp)
    }
@@ -153,10 +185,10 @@ fun EqScreen(
 
   EqSlider(
    label = "FREQUENCY",
-   helpText = "어느 음역을 조절할지 선택",
+   helpText = "이 점의 이동 범위: ${formatFrequency(bandDefinition.frequencyRange.start)}–${formatFrequency(bandDefinition.frequencyRange.endInclusive)}",
    valueText = formatFrequency(band.frequencyHz),
    value = log10(band.frequencyHz),
-   range = log10(20f)..log10(20_000f),
+   range = log10(bandDefinition.frequencyRange.start)..log10(bandDefinition.frequencyRange.endInclusive),
    onValueChanged = { onSettingsChanged(settings.withBand(selectedBand, band.copy(frequencyHz = 10f.pow(it)))) }
   )
   EqSlider(
@@ -356,7 +388,7 @@ private fun EqToggle(label: String, detail: String, checked: Boolean, onToggle: 
 }
 
 private fun EqSettings.withBand(index: Int, band: EqBand): EqSettings = copy(
- bands = bands.toMutableList().also { it[index] = band }
+ bands = bands.toMutableList().also { it[index] = band.sanitized(index) }
 )
 
 private fun pointForBand(band: EqBand, width: Float, height: Float) = Offset(
@@ -381,26 +413,12 @@ private fun formatFrequency(frequency: Float): String = when {
  else -> "${frequency.roundToInt()} Hz"
 }
 
-private fun bandRole(frequency: Float): String = when {
- frequency < 60f -> "초저역"
- frequency < 150f -> "저역"
- frequency < 400f -> "저중역"
- frequency < 1_000f -> "중역"
- frequency < 2_500f -> "중고역"
- frequency < 6_000f -> "존재감"
- frequency < 12_000f -> "고역"
- else -> "공기감"
-}
+private fun formatGainRange(range: ClosedFloatingPointRange<Float>): String =
+ "${signedDb(range.start)} – ${signedDb(range.endInclusive)}"
 
-private fun bandRoleDescription(frequency: Float): String = when {
- frequency < 60f -> "킥의 깊이와 아주 낮은 베이스에 영향을 줍니다."
- frequency < 150f -> "베이스와 킥의 무게감에 영향을 줍니다."
- frequency < 400f -> "보컬과 악기의 두께·따뜻함에 영향을 줍니다."
- frequency < 1_000f -> "보컬과 기타의 중심적인 음색에 영향을 줍니다."
- frequency < 2_500f -> "보컬·기타의 선명함과 공격감에 영향을 줍니다."
- frequency < 6_000f -> "스네어 어택과 보컬의 존재감에 영향을 줍니다."
- frequency < 12_000f -> "심벌과 디테일, 밝기에 영향을 줍니다."
- else -> "공간감과 반짝이는 느낌에 영향을 줍니다."
-}
+private fun formatCompactRange(range: ClosedFloatingPointRange<Float>): String =
+ "${signedNumber(range.start)}~${signedNumber(range.endInclusive)} dB"
+
+private fun signedNumber(value: Float): String = if (value > 0f) "+${value.roundToInt()}" else value.roundToInt().toString()
 
 private fun signedDb(value: Float): String = String.format(if (value >= 0f) "+%.1f dB" else "%.1f dB", value)

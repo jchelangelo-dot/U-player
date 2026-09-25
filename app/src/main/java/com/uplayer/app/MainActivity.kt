@@ -2,7 +2,11 @@ package com.uplayer.app
 
 import android.Manifest
 import android.content.ComponentName
+import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -11,6 +15,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -47,11 +52,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -73,7 +82,9 @@ import com.uplayer.app.dsp.EqSettings
 import com.uplayer.app.dsp.EqSettingsStore
 import com.uplayer.app.lyrics.LyricsScreen
 import com.uplayer.app.playback.PlaybackService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 private val AppBackground = Color(0xFF02040A)
@@ -308,7 +319,12 @@ private fun PlayerScreen(
    }
   }
 
-  AlbumArtPlaceholder(onClick = onOpenLyrics, enabled = playback.hasMedia)
+  AlbumArtwork(
+   mediaUri = playback.mediaUri,
+   title = playback.title,
+   onClick = onOpenLyrics,
+   enabled = playback.hasMedia
+  )
 
   Column(Modifier.padding(top = 34.dp)) {
    Text(
@@ -407,34 +423,80 @@ private fun PlayerScreen(
 }
 
 @Composable
-private fun AlbumArtPlaceholder(onClick: () -> Unit, enabled: Boolean) {
+private fun AlbumArtwork(
+ mediaUri: Uri?,
+ title: String?,
+ onClick: () -> Unit,
+ enabled: Boolean
+) {
+ val context = LocalContext.current
+ val artwork by produceState<ImageBitmap?>(initialValue = null, mediaUri) {
+  value = withContext(Dispatchers.IO) { loadEmbeddedArtwork(context, mediaUri) }
+ }
  Box(
   Modifier.fillMaxWidth().aspectRatio(1f).background(Color(0xFF07133F)).clickable(enabled = enabled, onClick = onClick),
   contentAlignment = Alignment.Center
  ) {
-  Box(
-   Modifier.fillMaxSize().padding(1.dp).background(Color(0xFF091A59)),
-   contentAlignment = Alignment.Center
-  ) {
-   Icon(
-    Icons.Default.GraphicEq,
-    contentDescription = "Album art placeholder",
-    tint = Ultramarine,
-    modifier = Modifier.size(84.dp)
+  if (artwork != null) {
+   Image(
+    bitmap = artwork!!,
+    contentDescription = title?.let { "$it album art" } ?: "Album art",
+    contentScale = ContentScale.Crop,
+    modifier = Modifier.fillMaxSize()
    )
-   Text(
-    "TAP FOR LYRICS",
-    color = Ultramarine,
-    fontSize = 9.sp,
-    letterSpacing = 1.4.sp,
-    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 18.dp)
-   )
+  } else {
+   Box(
+    Modifier.fillMaxSize().padding(1.dp).background(Color(0xFF091A59)),
+    contentAlignment = Alignment.Center
+   ) {
+    Icon(
+     Icons.Default.GraphicEq,
+     contentDescription = "Album art placeholder",
+     tint = Ultramarine,
+     modifier = Modifier.size(84.dp)
+    )
+   }
+  }
+  if (enabled) {
+   Box(
+    Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(alpha = 0.48f)).padding(vertical = 10.dp),
+    contentAlignment = Alignment.Center
+   ) {
+    Text("TAP FOR LYRICS", color = Color.White, fontSize = 9.sp, letterSpacing = 1.4.sp)
+   }
   }
  }
 }
 
+private fun loadEmbeddedArtwork(context: Context, mediaUri: Uri?): ImageBitmap? {
+ if (mediaUri == null) return null
+ val bytes = runCatching {
+  val retriever = MediaMetadataRetriever()
+  try {
+   retriever.setDataSource(context, mediaUri)
+   retriever.embeddedPicture
+  } finally {
+   retriever.release()
+  }
+ }.getOrNull() ?: return null
+
+ val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+ BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+ var sampleSize = 1
+ while (bounds.outWidth / sampleSize > 1_200 || bounds.outHeight / sampleSize > 1_200) {
+  sampleSize *= 2
+ }
+ return BitmapFactory.decodeByteArray(
+  bytes,
+  0,
+  bytes.size,
+  BitmapFactory.Options().apply { inSampleSize = sampleSize }
+ )?.asImageBitmap()
+}
+
 private data class PlaybackUiState(
  val mediaId: String? = null,
+ val mediaUri: Uri? = null,
  val title: String? = null,
  val artist: String? = null,
  val isPlaying: Boolean = false,
@@ -482,7 +544,8 @@ private fun Player?.toPlaybackUiState(): PlaybackUiState {
  if (this == null) return PlaybackUiState()
  val item = currentMediaItem
  return PlaybackUiState(
-  mediaId = item?.mediaId,
+ mediaId = item?.mediaId,
+  mediaUri = item?.localConfiguration?.uri,
   title = item?.mediaMetadata?.title?.toString(),
   artist = item?.mediaMetadata?.artist?.toString(),
   isPlaying = isPlaying,

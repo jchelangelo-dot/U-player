@@ -28,18 +28,22 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -60,9 +64,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -92,6 +98,7 @@ private val Ultramarine = Color(0xFF315CFF)
 private val SecondaryText = Color(0xFF7D8495)
 
 private enum class AppScreen { LIBRARY, PLAYER, EQ, LYRICS }
+private enum class LibrarySort(val label: String) { TITLE("TITLE"), ARTIST("ARTIST"), ALBUM("ALBUM") }
 
 class MainActivity : ComponentActivity() {
  private var controller by mutableStateOf<MediaController?>(null)
@@ -200,9 +207,9 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onRefresh:
       player = player,
       playback = playback,
       onRefresh = onRefresh,
-      onTrackSelected = { index ->
+      onTrackSelected = { queue, index ->
        player?.apply {
-        setMediaItems(tracks.map(Track::asMediaItem), index, 0L)
+        setMediaItems(queue.map(Track::asMediaItem), index, 0L)
         prepare()
         play()
        }
@@ -221,9 +228,25 @@ private fun LibraryScreen(
  player: Player?,
  playback: PlaybackUiState,
  onRefresh: () -> Unit,
- onTrackSelected: (Int) -> Unit,
+ onTrackSelected: (List<Track>, Int) -> Unit,
  onOpenPlayer: () -> Unit
 ) {
+ var query by remember { mutableStateOf("") }
+ var sort by remember { mutableStateOf(LibrarySort.TITLE) }
+ val visibleTracks = remember(tracks, query, sort) {
+  tracks
+   .filter { track ->
+    query.isBlank() || track.title.contains(query, ignoreCase = true) ||
+     track.artist.contains(query, ignoreCase = true) || track.album.contains(query, ignoreCase = true)
+   }
+   .let { filtered ->
+    when (sort) {
+     LibrarySort.TITLE -> filtered.sortedBy { it.title.lowercase(Locale.getDefault()) }
+     LibrarySort.ARTIST -> filtered.sortedWith(compareBy<Track> { it.artist.lowercase(Locale.getDefault()) }.thenBy { it.title.lowercase(Locale.getDefault()) })
+     LibrarySort.ALBUM -> filtered.sortedWith(compareBy<Track> { it.album.lowercase(Locale.getDefault()) }.thenBy { it.title.lowercase(Locale.getDefault()) })
+    }
+   }
+ }
  Column(Modifier.fillMaxSize().statusBarsPadding()) {
   Row(
    Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 18.dp),
@@ -233,17 +256,50 @@ private fun LibraryScreen(
    TextButton(onClick = onRefresh) { Text("REFRESH", color = Ultramarine, fontSize = 11.sp) }
   }
   Text(
-   if (player == null) "CONNECTING PLAYER..." else "LIBRARY  •  ${tracks.size} TRACKS",
+   if (player == null) "CONNECTING PLAYER..."
+   else if (query.isBlank()) "LIBRARY  •  ${tracks.size} TRACKS"
+   else "SEARCH  •  ${visibleTracks.size} / ${tracks.size} TRACKS",
    color = Ultramarine,
    fontSize = 11.sp,
    modifier = Modifier.padding(horizontal = 24.dp)
   )
+  Row(
+   Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp),
+   verticalAlignment = Alignment.CenterVertically
+  ) {
+   Icon(Icons.Default.Search, contentDescription = null, tint = SecondaryText, modifier = Modifier.size(18.dp))
+   BasicTextField(
+    value = query,
+    onValueChange = { query = it },
+    singleLine = true,
+    textStyle = TextStyle(color = Color.White, fontSize = 13.sp),
+    cursorBrush = SolidColor(Ultramarine),
+    modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
+    decorationBox = { inner ->
+     if (query.isBlank()) Text("곡, 아티스트 또는 앨범 검색", color = SecondaryText, fontSize = 12.sp)
+     inner()
+    }
+   )
+   if (query.isNotEmpty()) {
+    IconButton(onClick = { query = "" }, modifier = Modifier.size(30.dp)) {
+     Icon(Icons.Default.Close, contentDescription = "Clear search", tint = SecondaryText, modifier = Modifier.size(16.dp))
+    }
+   }
+  }
+  HorizontalDivider(color = Color(0xFF182038), thickness = 0.5.dp, modifier = Modifier.padding(horizontal = 24.dp))
+  Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 2.dp)) {
+   LibrarySort.entries.forEach { option ->
+    TextButton(onClick = { sort = option }) {
+     Text(option.label, color = if (sort == option) Ultramarine else SecondaryText, fontSize = 10.sp)
+    }
+   }
+  }
   LazyColumn(Modifier.weight(1f).padding(top = 12.dp)) {
-   itemsIndexed(tracks, key = { _, track -> track.id }) { index, track ->
+   itemsIndexed(visibleTracks, key = { _, track -> track.id }) { index, track ->
     Column(
      Modifier
       .fillMaxWidth()
-      .clickable(enabled = player != null) { onTrackSelected(index) }
+      .clickable(enabled = player != null) { onTrackSelected(visibleTracks, index) }
       .padding(horizontal = 24.dp, vertical = 12.dp)
     ) {
      Text(
@@ -252,7 +308,12 @@ private fun LibraryScreen(
       maxLines = 1,
       overflow = TextOverflow.Ellipsis
      )
-     Text(track.artist, color = SecondaryText, fontSize = 12.sp, maxLines = 1)
+     Text("${track.artist}  ·  ${track.album}", color = SecondaryText, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+   }
+   if (visibleTracks.isEmpty() && tracks.isNotEmpty()) {
+    item {
+     Text("검색 결과가 없습니다.", color = SecondaryText, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 24.dp, vertical = 28.dp))
     }
    }
   }

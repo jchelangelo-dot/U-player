@@ -23,10 +23,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -41,10 +43,13 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -81,6 +86,8 @@ import androidx.media3.session.SessionCommand
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import com.uplayer.app.library.AudioRepository
+import com.uplayer.app.library.MusicGroup
+import com.uplayer.app.library.MusicGroupRepository
 import com.uplayer.app.library.Track
 import com.uplayer.app.dsp.EqCommand
 import com.uplayer.app.dsp.EqScreen
@@ -231,10 +238,19 @@ private fun LibraryScreen(
  onTrackSelected: (List<Track>, Int) -> Unit,
  onOpenPlayer: () -> Unit
 ) {
+ val context = LocalContext.current
+ val groupRepository = remember(context) { MusicGroupRepository(context.applicationContext) }
  var query by remember { mutableStateOf("") }
  var sort by remember { mutableStateOf(LibrarySort.TITLE) }
- val visibleTracks = remember(tracks, query, sort) {
-  tracks
+ var groups by remember { mutableStateOf(groupRepository.load()) }
+ var selectedGroupId by remember { mutableStateOf<String?>(null) }
+ var showCreateGroup by remember { mutableStateOf(false) }
+ var groupToEdit by remember { mutableStateOf<MusicGroup?>(null) }
+ var groupToDelete by remember { mutableStateOf<MusicGroup?>(null) }
+ val selectedGroup = groups.firstOrNull { it.id == selectedGroupId }
+ val visibleTracks = remember(tracks, query, sort, selectedGroup) {
+  val groupedTracks = selectedGroup?.let { group -> tracks.filter { it.id in group.trackIds } } ?: tracks
+  groupedTracks
    .filter { track ->
     query.isBlank() || track.title.contains(query, ignoreCase = true) ||
      track.artist.contains(query, ignoreCase = true) || track.album.contains(query, ignoreCase = true)
@@ -257,8 +273,9 @@ private fun LibraryScreen(
   }
   Text(
    if (player == null) "CONNECTING PLAYER..."
-   else if (query.isBlank()) "LIBRARY  •  ${tracks.size} TRACKS"
-   else "SEARCH  •  ${visibleTracks.size} / ${tracks.size} TRACKS",
+   else if (query.isNotBlank()) "SEARCH  •  ${visibleTracks.size} TRACKS"
+   else if (selectedGroup != null) "${selectedGroup.name.uppercase()}  •  ${visibleTracks.size} TRACKS"
+   else "LIBRARY  •  ${tracks.size} TRACKS",
    color = Ultramarine,
    fontSize = 11.sp,
    modifier = Modifier.padding(horizontal = 24.dp)
@@ -294,6 +311,39 @@ private fun LibraryScreen(
     }
    }
   }
+  LazyRow(
+   Modifier.fillMaxWidth().padding(horizontal = 18.dp),
+   horizontalArrangement = Arrangement.spacedBy(2.dp)
+  ) {
+   item {
+    TextButton(onClick = { selectedGroupId = null }) {
+     Text("ALL", color = if (selectedGroupId == null) Color.White else SecondaryText, fontSize = 10.sp)
+    }
+   }
+   itemsIndexed(groups, key = { _, group -> group.id }) { _, group ->
+    TextButton(onClick = { selectedGroupId = group.id }) {
+     Text(group.name, color = if (selectedGroupId == group.id) Color.White else SecondaryText, fontSize = 10.sp, maxLines = 1)
+    }
+   }
+   item {
+    TextButton(onClick = { showCreateGroup = true }) {
+     Text("+ GROUP", color = Ultramarine, fontSize = 10.sp)
+    }
+   }
+  }
+  if (selectedGroup != null) {
+   Row(
+    Modifier.fillMaxWidth().padding(horizontal = 18.dp),
+    horizontalArrangement = Arrangement.End
+   ) {
+    TextButton(onClick = { groupToEdit = selectedGroup }) {
+     Text("EDIT SONGS", color = Ultramarine, fontSize = 10.sp)
+    }
+    TextButton(onClick = { groupToDelete = selectedGroup }) {
+     Text("DELETE", color = SecondaryText, fontSize = 10.sp)
+    }
+   }
+  }
   LazyColumn(Modifier.weight(1f).padding(top = 12.dp)) {
    itemsIndexed(visibleTracks, key = { _, track -> track.id }) { index, track ->
     Column(
@@ -319,6 +369,119 @@ private fun LibraryScreen(
   }
   MiniPlayer(player, playback, onOpenPlayer)
  }
+
+ if (showCreateGroup) {
+  CreateGroupDialog(
+   onDismiss = { showCreateGroup = false },
+   onCreate = { name ->
+    val updated = groupRepository.create(name, groups)
+    groups = updated
+    selectedGroupId = updated.lastOrNull()?.id
+    showCreateGroup = false
+   }
+  )
+ }
+ groupToEdit?.let { group ->
+  EditGroupTracksDialog(
+   group = group,
+   tracks = tracks,
+   onDismiss = { groupToEdit = null },
+   onSave = { trackIds ->
+    groups = groupRepository.update(group.copy(trackIds = trackIds), groups)
+    groupToEdit = null
+   }
+  )
+ }
+ groupToDelete?.let { group ->
+  DeleteGroupDialog(
+   group = group,
+   onDismiss = { groupToDelete = null },
+   onDelete = {
+    groups = groupRepository.delete(group.id, groups)
+    if (selectedGroupId == group.id) selectedGroupId = null
+    groupToDelete = null
+   }
+  )
+ }
+}
+
+@Composable
+private fun CreateGroupDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+ var name by remember { mutableStateOf("") }
+ AlertDialog(
+  onDismissRequest = onDismiss,
+  title = { Text("새 그룹", color = Color.White) },
+  text = {
+   OutlinedTextField(
+    value = name,
+    onValueChange = { if (it.length <= 40) name = it },
+    label = { Text("그룹 이름") },
+    singleLine = true
+   )
+  },
+  confirmButton = {
+   TextButton(onClick = { onCreate(name) }, enabled = name.isNotBlank()) {
+    Text("만들기", color = if (name.isNotBlank()) Ultramarine else SecondaryText)
+   }
+  },
+  dismissButton = { TextButton(onClick = onDismiss) { Text("취소", color = SecondaryText) } },
+  containerColor = Color(0xFF080C16)
+ )
+}
+
+@Composable
+private fun EditGroupTracksDialog(
+ group: MusicGroup,
+ tracks: List<Track>,
+ onDismiss: () -> Unit,
+ onSave: (Set<Long>) -> Unit
+) {
+ var selectedIds by remember(group.id) { mutableStateOf(group.trackIds) }
+ AlertDialog(
+  onDismissRequest = onDismiss,
+  title = { Text(group.name, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+  text = {
+   Column {
+    Text("그룹에 넣을 곡을 선택하세요.", color = SecondaryText, fontSize = 11.sp, modifier = Modifier.padding(bottom = 8.dp))
+    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
+     itemsIndexed(tracks, key = { _, track -> track.id }) { _, track ->
+      Row(
+       Modifier.fillMaxWidth().clickable {
+        selectedIds = if (track.id in selectedIds) selectedIds - track.id else selectedIds + track.id
+       }.padding(vertical = 5.dp),
+       verticalAlignment = Alignment.CenterVertically
+      ) {
+       Checkbox(
+        checked = track.id in selectedIds,
+        onCheckedChange = { checked ->
+         selectedIds = if (checked) selectedIds + track.id else selectedIds - track.id
+        }
+       )
+       Column(Modifier.weight(1f)) {
+        Text(track.title, color = Color.White, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(track.artist, color = SecondaryText, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+       }
+      }
+     }
+    }
+   }
+  },
+  confirmButton = { TextButton(onClick = { onSave(selectedIds) }) { Text("저장", color = Ultramarine) } },
+  dismissButton = { TextButton(onClick = onDismiss) { Text("취소", color = SecondaryText) } },
+  containerColor = Color(0xFF080C16)
+ )
+}
+
+@Composable
+private fun DeleteGroupDialog(group: MusicGroup, onDismiss: () -> Unit, onDelete: () -> Unit) {
+ AlertDialog(
+  onDismissRequest = onDismiss,
+  title = { Text("그룹 삭제", color = Color.White) },
+  text = { Text("‘${group.name}’ 그룹을 삭제할까요? 음악 파일은 삭제되지 않습니다.", color = SecondaryText) },
+  confirmButton = { TextButton(onClick = onDelete) { Text("삭제", color = Color(0xFFFF6B6B)) } },
+  dismissButton = { TextButton(onClick = onDismiss) { Text("취소", color = SecondaryText) } },
+  containerColor = Color(0xFF080C16)
+ )
 }
 
 @Composable

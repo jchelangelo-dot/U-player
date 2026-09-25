@@ -34,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -75,25 +76,36 @@ fun LyricsScreen(
  var document by remember(trackId) { mutableStateOf(repository.load(trackId) ?: LyricsDocument()) }
  var editing by remember(trackId) { mutableStateOf(document.isEmpty) }
  var combinedLyrics by remember(trackId) { mutableStateOf(document.toCombinedText()) }
- var displayMode by remember { mutableStateOf(LyricsDisplayMode.ALL) }
  var readerFontSize by remember { mutableFloatStateOf(repository.loadFontSizeSp()) }
  var syncing by remember(trackId) { mutableStateOf(false) }
- var selectedSyncIndex by remember(trackId) { mutableStateOf(0) }
+ var selectedSyncIndex by remember(trackId) { mutableIntStateOf(0) }
 
  BackHandler(onBack = onBack)
 
  Column(Modifier.fillMaxSize().background(LyricsBackground).statusBarsPadding()) {
   Row(
-   Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+   Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
    verticalAlignment = Alignment.CenterVertically
   ) {
    IconButton(onClick = onBack) {
-    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Player", tint = Color.White)
+    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Player", tint = LyricsSecondary)
    }
-   Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
-    Text(title, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1)
-    Text(artist, color = LyricsSecondary, fontSize = 10.sp, maxLines = 1)
-   }
+   Text("LYRICS", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Normal, modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+   Box(Modifier.width(48.dp))
+  }
+  Row(
+   Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 0.dp),
+   horizontalArrangement = Arrangement.End,
+   verticalAlignment = Alignment.CenterVertically
+  ) {
+   TextButton(onClick = {
+    readerFontSize = (readerFontSize - 2f).coerceAtLeast(12f)
+    repository.saveFontSizeSp(readerFontSize)
+   }) { Text("A−", color = LyricsSecondary, fontSize = 9.sp) }
+   TextButton(onClick = {
+    readerFontSize = (readerFontSize + 2f).coerceAtMost(26f)
+    repository.saveFontSizeSp(readerFontSize)
+   }) { Text("A+", color = LyricsSecondary, fontSize = 9.sp) }
    TextButton(onClick = {
     if (editing) {
      document = parseCombinedLyrics(combinedLyrics)
@@ -103,7 +115,7 @@ fun LyricsScreen(
     }
     editing = !editing
    }) {
-    Text(if (editing) "SAVE" else "EDIT", color = LyricsUltra, fontSize = 11.sp)
+    Text(if (editing) "SAVE" else "EDIT", color = LyricsSecondary, fontSize = 9.sp)
    }
    if (!editing && !document.isEmpty) {
     TextButton(onClick = {
@@ -112,11 +124,10 @@ fun LyricsScreen(
      }
      syncing = !syncing
     }) {
-     Text(if (syncing) "DONE" else "SYNC", color = LyricsUltra, fontSize = 11.sp)
+     Text(if (syncing) "DONE" else "SYNC", color = LyricsSecondary, fontSize = 9.sp)
     }
    }
   }
-  HorizontalDivider(color = LyricsHairline, thickness = 0.5.dp)
 
   if (editing) {
    LyricsEditor(
@@ -124,35 +135,6 @@ fun LyricsScreen(
     onValueChanged = { combinedLyrics = it }
    )
   } else {
-   Row(
-    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
-    horizontalArrangement = Arrangement.spacedBy(2.dp)
-   ) {
-    LyricsDisplayMode.entries.forEach { mode ->
-     TextButton(onClick = { displayMode = mode }) {
-      Text(mode.label, color = if (displayMode == mode) Color.White else LyricsSecondary, fontSize = 10.sp)
-     }
-    }
-   }
-   Row(
-    Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-    verticalAlignment = Alignment.CenterVertically
-   ) {
-    Text("TEXT SIZE", color = LyricsSecondary, fontSize = 9.sp, modifier = Modifier.weight(1f))
-    TextButton(onClick = {
-     readerFontSize = (readerFontSize - 2f).coerceAtLeast(12f)
-     repository.saveFontSizeSp(readerFontSize)
-    }) {
-     Text("−", color = LyricsUltra, fontSize = 18.sp)
-    }
-    Text("${readerFontSize.roundToInt()}", color = Color.White, fontSize = 10.sp)
-    TextButton(onClick = {
-     readerFontSize = (readerFontSize + 2f).coerceAtMost(26f)
-     repository.saveFontSizeSp(readerFontSize)
-    }) {
-     Text("+", color = LyricsUltra, fontSize = 18.sp)
-    }
-   }
    if (syncing) {
     TimingCorrectionPanel(
      lineIndex = selectedSyncIndex.coerceIn(0, document.rowCount.coerceAtLeast(1) - 1),
@@ -173,7 +155,7 @@ fun LyricsScreen(
    }
    LyricsReader(
     document = document,
-    mode = displayMode,
+    mode = LyricsDisplayMode.ALL,
     fontSize = readerFontSize,
     positionMs = positionMs,
     durationMs = durationMs,
@@ -332,7 +314,7 @@ private fun LyricsReader(
    ) {
     Box(
      Modifier
-      .width(3.dp)
+      .width(1.dp)
       .fillMaxHeight()
       .background(
        when {
@@ -345,12 +327,17 @@ private fun LyricsReader(
     Spacer(Modifier.width(12.dp))
     Column(Modifier.weight(1f)) {
     if (mode != LyricsDisplayMode.ORIGINAL_TRANSLATION || row.original.isNotBlank()) {
-     Text(row.original, color = Color.White, fontSize = fontSize.sp, lineHeight = (fontSize + 7f).sp)
+     Text(
+      row.original,
+      color = if (index == currentIndex) Color.White else LyricsSecondary,
+      fontSize = fontSize.sp,
+      lineHeight = (fontSize + 7f).sp
+     )
     }
     if ((mode == LyricsDisplayMode.ALL || mode == LyricsDisplayMode.ORIGINAL_READING) && row.pronunciation.isNotBlank()) {
      Text(
       row.pronunciation,
-      color = LyricsUltra,
+      color = if (index == currentIndex) LyricsUltra else LyricsUltra.copy(alpha = 0.58f),
       fontSize = (fontSize - 3f).coerceAtLeast(10f).sp,
       lineHeight = (fontSize + 3f).sp,
       modifier = Modifier.padding(top = 5.dp)
@@ -359,7 +346,7 @@ private fun LyricsReader(
     if ((mode == LyricsDisplayMode.ALL || mode == LyricsDisplayMode.ORIGINAL_TRANSLATION) && row.translation.isNotBlank()) {
      Text(
       row.translation,
-      color = LyricsSecondary,
+      color = if (index == currentIndex) LyricsSecondary else LyricsSecondary.copy(alpha = 0.62f),
       fontSize = (fontSize - 2f).coerceAtLeast(10f).sp,
       lineHeight = (fontSize + 4f).sp,
       modifier = Modifier.padding(top = 5.dp)

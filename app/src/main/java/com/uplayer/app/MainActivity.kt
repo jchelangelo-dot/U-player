@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -110,7 +111,6 @@ import com.uplayer.app.dsp.LiveStageScreen
 import com.uplayer.app.dsp.LiveStageSettings
 import com.uplayer.app.dsp.LiveStageSettingsStore
 import com.uplayer.app.lyrics.LyricsScreen
-import com.uplayer.app.focus.FocusSessionScreen
 import com.uplayer.app.playback.PlaybackService
 import com.uplayer.app.playback.PlaybackStateStore
 import kotlinx.coroutines.Dispatchers
@@ -122,7 +122,7 @@ private val AppBackground = Color(0xFF02040A)
 private val Ultramarine = Color(0xFF315CFF)
 private val SecondaryText = Color(0xFF7D8495)
 
-private enum class AppScreen { LIBRARY, PLAYER, EQ, LIVE_STAGE, FOCUS, LYRICS }
+private enum class AppScreen { LIBRARY, PLAYER, EQ, LIVE_STAGE, LYRICS }
 private enum class LibrarySort(val label: String) { TITLE("TITLE"), ARTIST("ARTIST"), ALBUM("ALBUM") }
 private enum class LibraryCategory(val label: String) { SONGS("SONGS"), ALBUMS("ALBUMS"), ARTISTS("ARTISTS"), FOLDERS("FOLDERS") }
 
@@ -139,7 +139,7 @@ class MainActivity : ComponentActivity() {
   super.onCreate(savedInstanceState)
   connectController()
   requestAudioAndLoad()
-  setContent { UPlayerApp(tracks, controller, ::refreshLibrary) }
+  setContent { UPlayerApp(tracks, controller) }
  }
 
  override fun onResume() {
@@ -180,7 +180,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onRefresh: () -> Unit) {
+private fun UPlayerApp(tracks: List<Track>, player: MediaController?) {
  var screen by remember { mutableStateOf(AppScreen.LIBRARY) }
  var focusOriginalItem by remember { mutableStateOf<MediaItem?>(null) }
  var focusSessionActive by remember { mutableStateOf(false) }
@@ -269,18 +269,13 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onRefresh:
     AppScreen.LIVE_STAGE -> LiveStageScreen(
      settings = liveStageSettings,
      mediaUri = (if (focusSessionActive) focusOriginalItem else player?.currentMediaItem)?.localConfiguration?.uri,
+     trackId = (focusOriginalItem ?: player?.currentMediaItem)?.mediaId.orEmpty(),
+     sessionActive = focusSessionActive,
      onSettingsChanged = ::updateLiveStage,
-     onBack = { screen = AppScreen.PLAYER }
-    )
-    AppScreen.FOCUS -> {
-     val original = focusOriginalItem ?: player?.currentMediaItem
-     FocusSessionScreen(
-      trackId = original?.mediaId.orEmpty(),
-      title = original?.mediaMetadata?.title?.toString() ?: "Unknown Track",
-      mediaUri = original?.localConfiguration?.uri,
-      sessionActive = focusSessionActive,
-      onPlaySession = { file ->
-       original?.let { source ->
+     onPlaySession = { file ->
+      val original = focusOriginalItem ?: player?.currentMediaItem
+      original?.let { source ->
+       if (!focusSessionActive) focusOriginalItem = source
         val sessionItem = MediaItem.Builder()
          .setMediaId("focus:${source.mediaId}")
          .setUri(Uri.fromFile(file))
@@ -288,15 +283,14 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onRefresh:
          .build()
         replaceCurrentItem(player, sessionItem)
         focusSessionActive = true
-       }
-      },
-      onPlayOriginal = {
-       original?.let { replaceCurrentItem(player, it) }
-       focusSessionActive = false
-      },
-      onBack = { screen = AppScreen.PLAYER }
-     )
-    }
+      }
+     },
+     onPlayOriginal = {
+      focusOriginalItem?.let { replaceCurrentItem(player, it) }
+      focusSessionActive = false
+     },
+     onBack = { screen = AppScreen.PLAYER }
+    )
     AppScreen.PLAYER -> PlayerScreen(
      player = player,
      playback = playback,
@@ -304,11 +298,10 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onRefresh:
      liveStageEnabled = liveStageSettings.enabled,
      onBack = { screen = AppScreen.LIBRARY },
      onOpenEq = { screen = AppScreen.EQ },
-     onOpenLiveStage = { screen = AppScreen.LIVE_STAGE },
-     onOpenFocus = {
+     onOpenLiveStage = {
       player?.currentMediaItem?.let {
        focusOriginalItem = if (focusSessionActive) focusOriginalItem else it
-       screen = AppScreen.FOCUS
+       screen = AppScreen.LIVE_STAGE
       }
      },
      onOpenLyrics = { if (playback.hasMedia) screen = AppScreen.LYRICS }
@@ -317,7 +310,6 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onRefresh:
       tracks = tracks,
       player = player,
       playback = playback,
-      onRefresh = onRefresh,
       onTrackSelected = { queue, index ->
        player?.apply {
         setMediaItems(queue.map(Track::asMediaItem), index, 0L)
@@ -338,7 +330,6 @@ private fun LibraryScreen(
  tracks: List<Track>,
  player: Player?,
  playback: PlaybackUiState,
- onRefresh: () -> Unit,
  onTrackSelected: (List<Track>, Int) -> Unit,
  onOpenPlayer: () -> Unit
 ) {
@@ -354,7 +345,6 @@ private fun LibraryScreen(
  var showCreateGroup by remember { mutableStateOf(false) }
  var groupToEdit by remember { mutableStateOf<MusicGroup?>(null) }
  var groupToDelete by remember { mutableStateOf<MusicGroup?>(null) }
- var showLibraryMenu by remember { mutableStateOf(false) }
  val selectedGroup = groups.firstOrNull { it.id == selectedGroupId }
  val visibleTracks = remember(tracks, query, sort, category, selectedGroup, favoritesOnly, favorites) {
   val groupedTracks = when {
@@ -383,55 +373,14 @@ private fun LibraryScreen(
  }
  Column(Modifier.fillMaxSize().statusBarsPadding()) {
   Row(
-   Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 18.dp),
+   Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp),
    verticalAlignment = Alignment.CenterVertically
   ) {
-   Text("U-player", color = Color.White, fontSize = 26.sp, modifier = Modifier.weight(1f))
-   TextButton(onClick = onRefresh) { Text("REFRESH", color = Ultramarine, fontSize = 11.sp) }
-   Box {
-    IconButton(onClick = { showLibraryMenu = true }) {
-     Icon(Icons.Default.MoreVert, contentDescription = "Library options", tint = SecondaryText)
-    }
-    DropdownMenu(expanded = showLibraryMenu, onDismissRequest = { showLibraryMenu = false }) {
-     DropdownMenuItem(
-      text = { Text("ALL SONGS") },
-      onClick = { selectedGroupId = null; favoritesOnly = false; showLibraryMenu = false }
-     )
-     DropdownMenuItem(
-      text = { Text("FAVORITES") },
-      onClick = { selectedGroupId = null; favoritesOnly = true; showLibraryMenu = false }
-     )
-     groups.forEach { group ->
-      DropdownMenuItem(
-       text = { Text(group.name, maxLines = 1) },
-       onClick = { selectedGroupId = group.id; favoritesOnly = false; showLibraryMenu = false }
-      )
-     }
-     DropdownMenuItem(
-      text = { Text("+ NEW GROUP", color = Ultramarine) },
-      onClick = { showLibraryMenu = false; showCreateGroup = true }
-     )
-     if (selectedGroup != null) {
-      DropdownMenuItem(
-       text = { Text("EDIT ${selectedGroup.name}") },
-       onClick = { showLibraryMenu = false; groupToEdit = selectedGroup }
-      )
-      DropdownMenuItem(
-       text = { Text("DELETE ${selectedGroup.name}", color = SecondaryText) },
-       onClick = { showLibraryMenu = false; groupToDelete = selectedGroup }
-      )
-     }
-     LibrarySort.entries.forEach { option ->
-      DropdownMenuItem(
-       text = { Text("SORT · ${option.label}", color = if (sort == option) Ultramarine else Color.White) },
-       onClick = { sort = option; showLibraryMenu = false }
-      )
-     }
-    }
-   }
+   Text("LIBRARY", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Normal, modifier = Modifier.weight(1f))
+   Text("${tracks.size} TRACKS", color = Color(0xFF626979), fontSize = 8.sp)
   }
   Row(
-   Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+   Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 6.dp),
    verticalAlignment = Alignment.CenterVertically
   ) {
    Icon(Icons.Default.Search, contentDescription = null, tint = SecondaryText, modifier = Modifier.size(18.dp))
@@ -455,11 +404,18 @@ private fun LibraryScreen(
   }
   HorizontalDivider(color = Color(0xFF182038), thickness = 0.5.dp, modifier = Modifier.padding(horizontal = 24.dp))
   Row(
-   Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 6.dp)
+   Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 4.dp),
+   verticalAlignment = Alignment.CenterVertically
   ) {
    LibraryCategory.entries.forEach { option ->
-    TextButton(onClick = { category = option }) {
-     Text(option.label, color = if (category == option) Color.White else SecondaryText, fontSize = 10.sp)
+    TextButton(onClick = { category = option; selectedGroupId = null; favoritesOnly = false }) {
+     Text(option.label, color = if (category == option && selectedGroupId == null) Ultramarine else Color(0xFF626979), fontSize = 9.sp)
+    }
+   }
+   TextButton(onClick = { showCreateGroup = true }) { Text("+", color = Ultramarine, fontSize = 13.sp) }
+   groups.forEach { group ->
+    TextButton(onClick = { selectedGroupId = group.id; favoritesOnly = false }) {
+     Text(group.name.uppercase(), color = if (selectedGroupId == group.id) Ultramarine else Color(0xFF626979), fontSize = 9.sp, maxLines = 1)
     }
    }
   }
@@ -685,13 +641,12 @@ private fun PlayerScreen(
  onBack: () -> Unit,
  onOpenEq: () -> Unit,
  onOpenLiveStage: () -> Unit,
- onOpenFocus: () -> Unit,
  onOpenLyrics: () -> Unit
 ) {
  var showQueue by remember { mutableStateOf(false) }
  Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 24.dp)) {
   Row(
-   Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 22.dp),
+   Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 14.dp),
    verticalAlignment = Alignment.CenterVertically
   ) {
    IconButton(onClick = onBack) {
@@ -699,20 +654,13 @@ private fun PlayerScreen(
    }
    Text(
     "NOW PLAYING",
-    color = Ultramarine,
-    fontSize = 11.sp,
-    letterSpacing = 1.8.sp,
-    modifier = Modifier.padding(start = 8.dp).weight(1f)
+    color = Color.White,
+    fontSize = 14.sp,
+    fontWeight = FontWeight.Normal,
+    modifier = Modifier.weight(1f),
+    textAlign = androidx.compose.ui.text.style.TextAlign.Center
     )
-   TextButton(onClick = onOpenEq) {
-    Text(if (eqEnabled) "EQ ON" else "EQ OFF", color = if (eqEnabled) Ultramarine else SecondaryText, fontSize = 11.sp)
-   }
-   TextButton(onClick = onOpenLiveStage) {
-    Text(if (liveStageEnabled) "LIVE ON" else "LIVE", color = if (liveStageEnabled) Ultramarine else SecondaryText, fontSize = 11.sp)
-   }
-   TextButton(onClick = onOpenFocus) {
-    Text("FOCUS", color = SecondaryText, fontSize = 11.sp)
-   }
+   Box(Modifier.size(48.dp))
   }
 
   AlbumArtwork(
@@ -818,9 +766,30 @@ private fun PlayerScreen(
     )
    }
   }
+
+  Row(
+   Modifier.fillMaxWidth().padding(top = 18.dp),
+   horizontalArrangement = Arrangement.SpaceEvenly,
+   verticalAlignment = Alignment.CenterVertically
+  ) {
+   PlayerShortcut("LYRICS", active = false, onClick = onOpenLyrics)
+   PlayerShortcut("EQ", active = eqEnabled, onClick = onOpenEq)
+   PlayerShortcut("LIVE MIX", active = liveStageEnabled, onClick = onOpenLiveStage)
+  }
  }
  if (showQueue && player != null) {
   PlaybackQueueDialog(player = player, onDismiss = { showQueue = false })
+ }
+}
+
+@Composable
+private fun PlayerShortcut(label: String, active: Boolean, onClick: () -> Unit) {
+ Column(
+  Modifier.clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 8.dp),
+  horizontalAlignment = Alignment.CenterHorizontally
+ ) {
+  Text(label, color = if (active) Color(0xFF8A91A3) else Color(0xFF626979), fontSize = 9.sp)
+  if (active) Box(Modifier.padding(top = 5.dp).size(4.dp).background(Ultramarine, CircleShape))
  }
 }
 

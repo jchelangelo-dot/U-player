@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -52,6 +53,8 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
@@ -351,6 +354,7 @@ private fun LibraryScreen(
  var showCreateGroup by remember { mutableStateOf(false) }
  var groupToEdit by remember { mutableStateOf<MusicGroup?>(null) }
  var groupToDelete by remember { mutableStateOf<MusicGroup?>(null) }
+ var showLibraryMenu by remember { mutableStateOf(false) }
  val selectedGroup = groups.firstOrNull { it.id == selectedGroupId }
  val visibleTracks = remember(tracks, query, sort, category, selectedGroup, favoritesOnly, favorites) {
   val groupedTracks = when {
@@ -384,28 +388,50 @@ private fun LibraryScreen(
   ) {
    Text("U-player", color = Color.White, fontSize = 26.sp, modifier = Modifier.weight(1f))
    TextButton(onClick = onRefresh) { Text("REFRESH", color = Ultramarine, fontSize = 11.sp) }
-  }
-  Text(
-   if (player == null) "CONNECTING PLAYER..."
-   else if (query.isNotBlank()) "SEARCH  •  ${visibleTracks.size} TRACKS"
-   else if (favoritesOnly) "FAVORITES  •  ${visibleTracks.size} TRACKS"
-   else if (selectedGroup != null) "${selectedGroup.name.uppercase()}  •  ${visibleTracks.size} TRACKS"
-   else "LIBRARY  •  ${tracks.size} TRACKS",
-   color = Ultramarine,
-   fontSize = 11.sp,
-   modifier = Modifier.padding(horizontal = 24.dp)
-  )
-  Row(
-   Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 2.dp)
-  ) {
-   LibraryCategory.entries.forEach { option ->
-    TextButton(onClick = { category = option }) {
-     Text(option.label, color = if (category == option) Color.White else SecondaryText, fontSize = 10.sp)
+   Box {
+    IconButton(onClick = { showLibraryMenu = true }) {
+     Icon(Icons.Default.MoreVert, contentDescription = "Library options", tint = SecondaryText)
+    }
+    DropdownMenu(expanded = showLibraryMenu, onDismissRequest = { showLibraryMenu = false }) {
+     DropdownMenuItem(
+      text = { Text("ALL SONGS") },
+      onClick = { selectedGroupId = null; favoritesOnly = false; showLibraryMenu = false }
+     )
+     DropdownMenuItem(
+      text = { Text("FAVORITES") },
+      onClick = { selectedGroupId = null; favoritesOnly = true; showLibraryMenu = false }
+     )
+     groups.forEach { group ->
+      DropdownMenuItem(
+       text = { Text(group.name, maxLines = 1) },
+       onClick = { selectedGroupId = group.id; favoritesOnly = false; showLibraryMenu = false }
+      )
+     }
+     DropdownMenuItem(
+      text = { Text("+ NEW GROUP", color = Ultramarine) },
+      onClick = { showLibraryMenu = false; showCreateGroup = true }
+     )
+     if (selectedGroup != null) {
+      DropdownMenuItem(
+       text = { Text("EDIT ${selectedGroup.name}") },
+       onClick = { showLibraryMenu = false; groupToEdit = selectedGroup }
+      )
+      DropdownMenuItem(
+       text = { Text("DELETE ${selectedGroup.name}", color = SecondaryText) },
+       onClick = { showLibraryMenu = false; groupToDelete = selectedGroup }
+      )
+     }
+     LibrarySort.entries.forEach { option ->
+      DropdownMenuItem(
+       text = { Text("SORT · ${option.label}", color = if (sort == option) Ultramarine else Color.White) },
+       onClick = { sort = option; showLibraryMenu = false }
+      )
+     }
     }
    }
   }
   Row(
-   Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp),
+   Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
    verticalAlignment = Alignment.CenterVertically
   ) {
    Icon(Icons.Default.Search, contentDescription = null, tint = SecondaryText, modifier = Modifier.size(18.dp))
@@ -428,52 +454,16 @@ private fun LibraryScreen(
    }
   }
   HorizontalDivider(color = Color(0xFF182038), thickness = 0.5.dp, modifier = Modifier.padding(horizontal = 24.dp))
-  Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 2.dp)) {
-   LibrarySort.entries.forEach { option ->
-    TextButton(onClick = { sort = option }) {
-     Text(option.label, color = if (sort == option) Ultramarine else SecondaryText, fontSize = 10.sp)
-    }
-   }
-  }
-  LazyRow(
-   Modifier.fillMaxWidth().padding(horizontal = 18.dp),
-   horizontalArrangement = Arrangement.spacedBy(2.dp)
+  Row(
+   Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 6.dp)
   ) {
-   item {
-    TextButton(onClick = { selectedGroupId = null; favoritesOnly = false }) {
-     Text("ALL", color = if (selectedGroupId == null && !favoritesOnly) Color.White else SecondaryText, fontSize = 10.sp)
-    }
-   }
-   item {
-    TextButton(onClick = { selectedGroupId = null; favoritesOnly = true }) {
-     Text("FAVORITES", color = if (favoritesOnly) Color.White else SecondaryText, fontSize = 10.sp)
-    }
-   }
-   itemsIndexed(groups, key = { _, group -> group.id }) { _, group ->
-    TextButton(onClick = { selectedGroupId = group.id; favoritesOnly = false }) {
-     Text(group.name, color = if (selectedGroupId == group.id) Color.White else SecondaryText, fontSize = 10.sp, maxLines = 1)
-    }
-   }
-   item {
-    TextButton(onClick = { showCreateGroup = true }) {
-     Text("+ GROUP", color = Ultramarine, fontSize = 10.sp)
+   LibraryCategory.entries.forEach { option ->
+    TextButton(onClick = { category = option }) {
+     Text(option.label, color = if (category == option) Color.White else SecondaryText, fontSize = 10.sp)
     }
    }
   }
-  if (selectedGroup != null) {
-   Row(
-    Modifier.fillMaxWidth().padding(horizontal = 18.dp),
-    horizontalArrangement = Arrangement.End
-   ) {
-    TextButton(onClick = { groupToEdit = selectedGroup }) {
-     Text("EDIT SONGS", color = Ultramarine, fontSize = 10.sp)
-    }
-    TextButton(onClick = { groupToDelete = selectedGroup }) {
-     Text("DELETE", color = SecondaryText, fontSize = 10.sp)
-    }
-   }
-  }
-  LazyColumn(Modifier.weight(1f).padding(top = 12.dp)) {
+  LazyColumn(Modifier.weight(1f).padding(top = 4.dp)) {
    itemsIndexed(visibleTracks, key = { _, track -> track.id }) { index, track ->
     val section = when (category) {
      LibraryCategory.ALBUMS -> track.album

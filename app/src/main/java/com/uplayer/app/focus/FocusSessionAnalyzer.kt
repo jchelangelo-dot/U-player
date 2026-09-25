@@ -93,8 +93,14 @@ class FocusSessionAnalyzer(private val context: Context) {
   onProgress: (FocusAnalysisProgress) -> Unit
  ) {
   val environment = OrtEnvironment.getEnvironment()
-  val options = OrtSession.SessionOptions().apply { setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT) }
-  environment.createSession(modelFile.absolutePath, options).use { session ->
+  onProgress(FocusAnalysisProgress(0.25f, "저메모리 AI 엔진을 준비하는 중"))
+  OrtSession.SessionOptions().use { options ->
+   options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT)
+   options.setMemoryPatternOptimization(false)
+   options.setCPUArenaAllocator(false)
+   options.setInterOpNumThreads(1)
+   options.setIntraOpNumThreads(1)
+   environment.createSession(modelFile.absolutePath, options).use { session ->
    val totalSamples = audio.targetFrameCount
    val chunks = max(1, ceil(totalSamples.toDouble() / STRIDE).toInt())
    val input = FloatArray(2 * SEGMENT_SAMPLES)
@@ -135,6 +141,7 @@ class FocusSessionAnalyzer(private val context: Context) {
     }
     val progress = 0.24f + ((chunkIndex + 1f) / chunks) * 0.74f
     onProgress(FocusAnalysisProgress(progress, "음원 분리 ${chunkIndex + 1}/$chunks"))
+   }
    }
   }
  }

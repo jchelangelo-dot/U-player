@@ -16,6 +16,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,10 +31,14 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GraphicEq
@@ -81,6 +86,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -95,8 +101,15 @@ import com.uplayer.app.dsp.EqCommand
 import com.uplayer.app.dsp.EqScreen
 import com.uplayer.app.dsp.EqSettings
 import com.uplayer.app.dsp.EqSettingsStore
+import com.uplayer.app.dsp.EqUserPresetStore
+import com.uplayer.app.dsp.LiveStageCommand
+import com.uplayer.app.dsp.LiveStageScreen
+import com.uplayer.app.dsp.LiveStageSettings
+import com.uplayer.app.dsp.LiveStageSettingsStore
 import com.uplayer.app.lyrics.LyricsScreen
+import com.uplayer.app.focus.FocusSessionScreen
 import com.uplayer.app.playback.PlaybackService
+import com.uplayer.app.playback.PlaybackStateStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -106,8 +119,9 @@ private val AppBackground = Color(0xFF02040A)
 private val Ultramarine = Color(0xFF315CFF)
 private val SecondaryText = Color(0xFF7D8495)
 
-private enum class AppScreen { LIBRARY, PLAYER, EQ, LYRICS }
+private enum class AppScreen { LIBRARY, PLAYER, EQ, LIVE_STAGE, FOCUS, LYRICS }
 private enum class LibrarySort(val label: String) { TITLE("TITLE"), ARTIST("ARTIST"), ALBUM("ALBUM") }
+private enum class LibraryCategory(val label: String) { SONGS("SONGS"), ALBUMS("ALBUMS"), ARTISTS("ARTISTS"), FOLDERS("FOLDERS") }
 
 class MainActivity : ComponentActivity() {
  private var controller by mutableStateOf<MediaController?>(null)
@@ -165,10 +179,44 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onRefresh: () -> Unit) {
  var screen by remember { mutableStateOf(AppScreen.LIBRARY) }
+ var focusOriginalItem by remember { mutableStateOf<MediaItem?>(null) }
+ var focusSessionActive by remember { mutableStateOf(false) }
  val playback = rememberPlaybackState(player)
  val context = LocalContext.current
+ val playbackStateStore = remember(context) { PlaybackStateStore(context.applicationContext) }
+ var playbackRestored by remember(player) { mutableStateOf(false) }
  val eqStore = remember(context) { EqSettingsStore(context.applicationContext) }
  var eqSettings by remember(eqStore) { mutableStateOf(eqStore.load()) }
+ val eqUserPresetStore = remember(context) { EqUserPresetStore(context.applicationContext) }
+ var eqUserPresets by remember(eqUserPresetStore) { mutableStateOf(eqUserPresetStore.load()) }
+ val liveStageStore = remember(context) { LiveStageSettingsStore(context.applicationContext) }
+ var liveStageSettings by remember(liveStageStore) { mutableStateOf(liveStageStore.load()) }
+
+ LaunchedEffect(player, tracks, playbackRestored) {
+  if (player == null || tracks.isEmpty() || playbackRestored) return@LaunchedEffect
+  if (player.currentMediaItem == null) {
+   playbackStateStore.load()?.let { saved ->
+    val tracksById = tracks.associateBy(Track::id)
+    val queue = saved.mediaIds.mapNotNull(tracksById::get)
+    if (queue.isNotEmpty()) {
+     val restoredIndex = queue.indexOfFirst { it.id == saved.currentMediaId }.coerceAtLeast(0)
+     player.setMediaItems(queue.map(Track::asMediaItem), restoredIndex, saved.positionMs)
+     player.repeatMode = saved.repeatMode
+     player.shuffleModeEnabled = saved.shuffle
+     player.prepare()
+     player.pause()
+    }
+   }
+  }
+  playbackRestored = true
+ }
+
+ LaunchedEffect(player, playback.hasMedia, focusSessionActive) {
+  while (player != null && playback.hasMedia) {
+   if (!focusSessionActive) playbackStateStore.save(player)
+   delay(2_000L)
+  }
+ }
 
  fun updateEq(settings: EqSettings) {
   eqSettings = settings
@@ -176,6 +224,15 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onRefresh:
   player?.sendCustomCommand(
    SessionCommand(EqCommand.ACTION_UPDATE, Bundle.EMPTY),
    EqCommand.toBundle(settings)
+  )
+ }
+
+ fun updateLiveStage(settings: LiveStageSettings) {
+  liveStageSettings = settings
+  liveStageStore.save(settings)
+  player?.sendCustomCommand(
+   SessionCommand(LiveStageCommand.ACTION_UPDATE, Bundle.EMPTY),
+   LiveStageCommand.toBundle(settings)
   )
  }
 
@@ -200,15 +257,56 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onRefresh:
     )
     AppScreen.EQ -> EqScreen(
      settings = eqSettings,
+     userPresets = eqUserPresets,
      onSettingsChanged = ::updateEq,
+     onSaveUserPreset = { name -> eqUserPresets = eqUserPresetStore.add(name, eqSettings, eqUserPresets) },
+     onDeleteUserPreset = { id -> eqUserPresets = eqUserPresetStore.delete(id, eqUserPresets) },
      onBack = { screen = AppScreen.PLAYER }
     )
+    AppScreen.LIVE_STAGE -> LiveStageScreen(
+     settings = liveStageSettings,
+     onSettingsChanged = ::updateLiveStage,
+     onBack = { screen = AppScreen.PLAYER }
+    )
+    AppScreen.FOCUS -> {
+     val original = focusOriginalItem ?: player?.currentMediaItem
+     FocusSessionScreen(
+      trackId = original?.mediaId.orEmpty(),
+      title = original?.mediaMetadata?.title?.toString() ?: "Unknown Track",
+      mediaUri = original?.localConfiguration?.uri,
+      sessionActive = focusSessionActive,
+      onPlaySession = { file ->
+       original?.let { source ->
+        val sessionItem = MediaItem.Builder()
+         .setMediaId("focus:${source.mediaId}")
+         .setUri(Uri.fromFile(file))
+         .setMediaMetadata(source.mediaMetadata)
+         .build()
+        replaceCurrentItem(player, sessionItem)
+        focusSessionActive = true
+       }
+      },
+      onPlayOriginal = {
+       original?.let { replaceCurrentItem(player, it) }
+       focusSessionActive = false
+      },
+      onBack = { screen = AppScreen.PLAYER }
+     )
+    }
     AppScreen.PLAYER -> PlayerScreen(
      player = player,
      playback = playback,
      eqEnabled = eqSettings.enabled,
+     liveStageEnabled = liveStageSettings.enabled,
      onBack = { screen = AppScreen.LIBRARY },
      onOpenEq = { screen = AppScreen.EQ },
+     onOpenLiveStage = { screen = AppScreen.LIVE_STAGE },
+     onOpenFocus = {
+      player?.currentMediaItem?.let {
+       focusOriginalItem = if (focusSessionActive) focusOriginalItem else it
+       screen = AppScreen.FOCUS
+      }
+     },
      onOpenLyrics = { if (playback.hasMedia) screen = AppScreen.LYRICS }
     )
     AppScreen.LIBRARY -> LibraryScreen(
@@ -244,6 +342,7 @@ private fun LibraryScreen(
  val groupRepository = remember(context) { MusicGroupRepository(context.applicationContext) }
  var query by remember { mutableStateOf("") }
  var sort by remember { mutableStateOf(LibrarySort.TITLE) }
+ var category by remember { mutableStateOf(LibraryCategory.SONGS) }
  var groups by remember { mutableStateOf(groupRepository.load()) }
  var favorites by remember { mutableStateOf(groupRepository.loadFavorites()) }
  var favoritesOnly by remember { mutableStateOf(false) }
@@ -252,7 +351,7 @@ private fun LibraryScreen(
  var groupToEdit by remember { mutableStateOf<MusicGroup?>(null) }
  var groupToDelete by remember { mutableStateOf<MusicGroup?>(null) }
  val selectedGroup = groups.firstOrNull { it.id == selectedGroupId }
- val visibleTracks = remember(tracks, query, sort, selectedGroup, favoritesOnly, favorites) {
+ val visibleTracks = remember(tracks, query, sort, category, selectedGroup, favoritesOnly, favorites) {
   val groupedTracks = when {
    favoritesOnly -> tracks.filter { it.id in favorites }
    selectedGroup != null -> tracks.filter { it.id in selectedGroup.trackIds }
@@ -261,13 +360,19 @@ private fun LibraryScreen(
   groupedTracks
    .filter { track ->
     query.isBlank() || track.title.contains(query, ignoreCase = true) ||
-     track.artist.contains(query, ignoreCase = true) || track.album.contains(query, ignoreCase = true)
+     track.artist.contains(query, ignoreCase = true) || track.album.contains(query, ignoreCase = true) ||
+     track.folder.contains(query, ignoreCase = true)
    }
    .let { filtered ->
-    when (sort) {
-     LibrarySort.TITLE -> filtered.sortedBy { it.title.lowercase(Locale.getDefault()) }
-     LibrarySort.ARTIST -> filtered.sortedWith(compareBy<Track> { it.artist.lowercase(Locale.getDefault()) }.thenBy { it.title.lowercase(Locale.getDefault()) })
-     LibrarySort.ALBUM -> filtered.sortedWith(compareBy<Track> { it.album.lowercase(Locale.getDefault()) }.thenBy { it.title.lowercase(Locale.getDefault()) })
+    when (category) {
+     LibraryCategory.ALBUMS -> filtered.sortedWith(compareBy<Track> { it.album.lowercase(Locale.getDefault()) }.thenBy { it.title.lowercase(Locale.getDefault()) })
+     LibraryCategory.ARTISTS -> filtered.sortedWith(compareBy<Track> { it.artist.lowercase(Locale.getDefault()) }.thenBy { it.title.lowercase(Locale.getDefault()) })
+     LibraryCategory.FOLDERS -> filtered.sortedWith(compareBy<Track> { it.folder.lowercase(Locale.getDefault()) }.thenBy { it.title.lowercase(Locale.getDefault()) })
+     LibraryCategory.SONGS -> when (sort) {
+      LibrarySort.TITLE -> filtered.sortedBy { it.title.lowercase(Locale.getDefault()) }
+      LibrarySort.ARTIST -> filtered.sortedWith(compareBy<Track> { it.artist.lowercase(Locale.getDefault()) }.thenBy { it.title.lowercase(Locale.getDefault()) })
+      LibrarySort.ALBUM -> filtered.sortedWith(compareBy<Track> { it.album.lowercase(Locale.getDefault()) }.thenBy { it.title.lowercase(Locale.getDefault()) })
+     }
     }
    }
  }
@@ -289,6 +394,15 @@ private fun LibraryScreen(
    fontSize = 11.sp,
    modifier = Modifier.padding(horizontal = 24.dp)
   )
+  Row(
+   Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 2.dp)
+  ) {
+   LibraryCategory.entries.forEach { option ->
+    TextButton(onClick = { category = option }) {
+     Text(option.label, color = if (category == option) Color.White else SecondaryText, fontSize = 10.sp)
+    }
+   }
+  }
   Row(
    Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp),
    verticalAlignment = Alignment.CenterVertically
@@ -360,6 +474,27 @@ private fun LibraryScreen(
   }
   LazyColumn(Modifier.weight(1f).padding(top = 12.dp)) {
    itemsIndexed(visibleTracks, key = { _, track -> track.id }) { index, track ->
+    val section = when (category) {
+     LibraryCategory.ALBUMS -> track.album
+     LibraryCategory.ARTISTS -> track.artist
+     LibraryCategory.FOLDERS -> track.folder
+     LibraryCategory.SONGS -> null
+    }
+    val previousSection = if (index > 0) when (category) {
+     LibraryCategory.ALBUMS -> visibleTracks[index - 1].album
+     LibraryCategory.ARTISTS -> visibleTracks[index - 1].artist
+     LibraryCategory.FOLDERS -> visibleTracks[index - 1].folder
+     LibraryCategory.SONGS -> null
+    } else null
+    if (section != null && section != previousSection) {
+     Text(
+      section.uppercase(),
+      color = Ultramarine,
+      fontSize = 10.sp,
+      letterSpacing = 1.1.sp,
+      modifier = Modifier.padding(start = 24.dp, top = 16.dp, bottom = 4.dp)
+     )
+    }
     Row(
      Modifier
       .fillMaxWidth()
@@ -555,10 +690,14 @@ private fun PlayerScreen(
  player: Player?,
  playback: PlaybackUiState,
  eqEnabled: Boolean,
+ liveStageEnabled: Boolean,
  onBack: () -> Unit,
  onOpenEq: () -> Unit,
+ onOpenLiveStage: () -> Unit,
+ onOpenFocus: () -> Unit,
  onOpenLyrics: () -> Unit
 ) {
+ var showQueue by remember { mutableStateOf(false) }
  Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 24.dp)) {
   Row(
    Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 22.dp),
@@ -576,6 +715,12 @@ private fun PlayerScreen(
     )
    TextButton(onClick = onOpenEq) {
     Text(if (eqEnabled) "EQ ON" else "EQ OFF", color = if (eqEnabled) Ultramarine else SecondaryText, fontSize = 11.sp)
+   }
+   TextButton(onClick = onOpenLiveStage) {
+    Text(if (liveStageEnabled) "LIVE ON" else "LIVE", color = if (liveStageEnabled) Ultramarine else SecondaryText, fontSize = 11.sp)
+   }
+   TextButton(onClick = onOpenFocus) {
+    Text("FOCUS", color = SecondaryText, fontSize = 11.sp)
    }
   }
 
@@ -668,6 +813,9 @@ private fun PlayerScreen(
      tint = if (playback.shuffle) Ultramarine else SecondaryText
     )
    }
+   IconButton(onClick = { showQueue = true }, enabled = player != null && playback.hasMedia) {
+    Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = "Playback queue", tint = SecondaryText)
+   }
    IconButton(
     onClick = { player?.repeatMode = nextRepeatMode(playback.repeatMode) },
     enabled = player != null && playback.hasMedia
@@ -680,6 +828,56 @@ private fun PlayerScreen(
    }
   }
  }
+ if (showQueue && player != null) {
+  PlaybackQueueDialog(player = player, onDismiss = { showQueue = false })
+ }
+}
+
+@Composable
+private fun PlaybackQueueDialog(player: Player, onDismiss: () -> Unit) {
+ var revision by remember { mutableLongStateOf(0L) }
+ val items = remember(revision, player.mediaItemCount, player.currentMediaItemIndex) {
+  List(player.mediaItemCount) { player.getMediaItemAt(it) }
+ }
+ AlertDialog(
+  onDismissRequest = onDismiss,
+  title = { Text("재생 대기열", color = Color.White) },
+  text = {
+   LazyColumn(Modifier.fillMaxWidth().heightIn(max = 430.dp)) {
+    itemsIndexed(items) { index, item ->
+     Row(
+      Modifier.fillMaxWidth().clickable { player.seekToDefaultPosition(index) }.padding(vertical = 5.dp),
+      verticalAlignment = Alignment.CenterVertically
+     ) {
+      Column(Modifier.weight(1f)) {
+       Text(
+        item.mediaMetadata.title?.toString() ?: "Unknown Track",
+        color = if (index == player.currentMediaItemIndex) Ultramarine else Color.White,
+        fontSize = 12.sp,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+       )
+       Text(item.mediaMetadata.artist?.toString() ?: "Unknown Artist", color = SecondaryText, fontSize = 10.sp, maxLines = 1)
+      }
+      IconButton(
+       enabled = index > 0,
+       onClick = { player.moveMediaItem(index, index - 1); revision++ }
+      ) {
+       Icon(Icons.Default.ArrowUpward, contentDescription = "Move up", tint = if (index > 0) SecondaryText else Color(0xFF343A48), modifier = Modifier.size(17.dp))
+      }
+      IconButton(
+       enabled = index < items.lastIndex,
+       onClick = { player.moveMediaItem(index, index + 1); revision++ }
+      ) {
+       Icon(Icons.Default.ArrowDownward, contentDescription = "Move down", tint = if (index < items.lastIndex) SecondaryText else Color(0xFF343A48), modifier = Modifier.size(17.dp))
+      }
+     }
+    }
+   }
+  },
+  confirmButton = { TextButton(onClick = onDismiss) { Text("완료", color = Ultramarine) } },
+  containerColor = Color(0xFF080C16)
+ )
 }
 
 @Composable
@@ -823,6 +1021,19 @@ private fun Player?.safePosition(): Long = this?.currentPosition?.coerceAtLeast(
 
 private fun togglePlayback(player: Player?) {
  if (player?.isPlaying == true) player.pause() else player?.play()
+}
+
+private fun replaceCurrentItem(player: Player?, item: MediaItem) {
+ if (player == null || player.mediaItemCount == 0) return
+ val position = player.currentPosition.coerceAtLeast(0L)
+ val currentIndex = player.currentMediaItemIndex.coerceAtLeast(0)
+ val wasPlaying = player.isPlaying
+ val queue = List(player.mediaItemCount) { index ->
+  if (index == currentIndex) item else player.getMediaItemAt(index)
+ }
+ player.setMediaItems(queue, currentIndex, position)
+ player.prepare()
+ if (wasPlaying) player.play()
 }
 
 private fun nextRepeatMode(current: Int) = when (current) {

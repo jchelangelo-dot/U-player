@@ -8,7 +8,15 @@ import android.provider.MediaStore
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 
-data class Track(val id: Long, val title: String, val artist: String, val album: String, val durationMs: Long, val uri: Uri) {
+data class Track(
+ val id: Long,
+ val title: String,
+ val artist: String,
+ val album: String,
+ val folder: String,
+ val durationMs: Long,
+ val uri: Uri
+) {
  fun asMediaItem() = MediaItem.Builder().setMediaId(id.toString()).setUri(uri)
   .setMediaMetadata(MediaMetadata.Builder().setTitle(title).setArtist(artist).setAlbumTitle(album).build()).build()
 }
@@ -26,6 +34,7 @@ class AudioRepository(private val context: Context) {
    MediaStore.Audio.Media.DISPLAY_NAME,
    MediaStore.Audio.Media.ARTIST,
    MediaStore.Audio.Media.ALBUM,
+   MediaStore.Audio.Media.RELATIVE_PATH,
    MediaStore.Audio.Media.DURATION
   )
   return context.contentResolver.query(
@@ -40,6 +49,7 @@ class AudioRepository(private val context: Context) {
    val displayName = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)
    val artist = c.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
    val album = c.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM)
+   val relativePath = c.getColumnIndexOrThrow(MediaStore.Audio.Media.RELATIVE_PATH)
    val duration = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
    buildList {
     while (c.moveToNext()) {
@@ -53,6 +63,7 @@ class AudioRepository(private val context: Context) {
        resolvedTitle,
        c.getString(artist)?.takeIf { it.isNotBlank() } ?: "Unknown Artist",
        c.getString(album)?.takeIf { it.isNotBlank() } ?: "Unknown Album",
+       c.getString(relativePath)?.trimEnd('/')?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "Unknown Folder",
        c.getLong(duration),
        ContentUris.withAppendedId(collection, trackId)
       )

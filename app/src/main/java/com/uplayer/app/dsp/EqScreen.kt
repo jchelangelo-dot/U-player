@@ -22,15 +22,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -61,10 +64,16 @@ private val EqHairline = Color(0xFF182038)
 @Composable
 fun EqScreen(
  settings: EqSettings,
+ userPresets: List<EqUserPreset>,
  onSettingsChanged: (EqSettings) -> Unit,
+ onSaveUserPreset: (String) -> Unit,
+ onDeleteUserPreset: (String) -> Unit,
  onBack: () -> Unit
 ) {
  var selectedBand by remember { mutableIntStateOf(0) }
+ var selectedUserPresetId by remember { mutableStateOf<String?>(null) }
+ var showSavePreset by remember { mutableStateOf(false) }
+ var presetName by remember(showSavePreset) { mutableStateOf("") }
  val selectedPreset = settings.preset
  BackHandler(onBack = onBack)
 
@@ -99,13 +108,39 @@ fun EqScreen(
   ) {
    EqPreset.entries.forEach { preset ->
     TextButton(onClick = {
+     selectedUserPresetId = null
      onSettingsChanged(preset.settings())
     }) {
      Text(
       preset.label,
-      color = if (selectedPreset == preset) Color.White else EqText,
+      color = if (selectedUserPresetId == null && selectedPreset == preset) Color.White else EqText,
       fontSize = 10.sp
      )
+    }
+   }
+  }
+  Row(
+   Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+   verticalAlignment = Alignment.CenterVertically
+  ) {
+   Text("MY PRESETS", color = EqUltra, fontSize = 9.sp, modifier = Modifier.padding(end = 6.dp))
+   userPresets.forEach { preset ->
+    TextButton(onClick = {
+     selectedUserPresetId = preset.id
+     onSettingsChanged(preset.settings)
+    }) {
+     Text(preset.name, color = if (selectedUserPresetId == preset.id) Color.White else EqText, fontSize = 10.sp)
+    }
+   }
+   TextButton(onClick = { showSavePreset = true }) {
+    Text("+ SAVE", color = EqUltra, fontSize = 10.sp)
+   }
+   selectedUserPresetId?.let { selectedId ->
+    TextButton(onClick = {
+     onDeleteUserPreset(selectedId)
+     selectedUserPresetId = null
+    }) {
+     Text("DELETE", color = Color(0xFFFF6B6B), fontSize = 9.sp)
     }
    }
   }
@@ -222,6 +257,29 @@ fun EqScreen(
     Text(if (settings.enabled) "A/B: EQ" else "A/B: ORIGINAL", color = EqUltra, fontSize = 11.sp)
    }
   }
+ }
+
+ if (showSavePreset) {
+  AlertDialog(
+   onDismissRequest = { showSavePreset = false },
+   title = { Text("EQ 프리셋 저장", color = Color.White) },
+   text = {
+    OutlinedTextField(
+     value = presetName,
+     onValueChange = { if (it.length <= 32) presetName = it },
+     label = { Text("프리셋 이름") },
+     singleLine = true
+    )
+   },
+   confirmButton = {
+    TextButton(
+     enabled = presetName.isNotBlank(),
+     onClick = { onSaveUserPreset(presetName); showSavePreset = false }
+    ) { Text("저장", color = if (presetName.isNotBlank()) EqUltra else EqText) }
+   },
+   dismissButton = { TextButton(onClick = { showSavePreset = false }) { Text("취소", color = EqText) } },
+   containerColor = Color(0xFF080C16)
+  )
  }
 }
 

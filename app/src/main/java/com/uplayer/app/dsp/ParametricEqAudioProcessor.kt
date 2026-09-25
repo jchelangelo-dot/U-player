@@ -16,15 +16,25 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 @OptIn(UnstableApi::class)
-class ParametricEqAudioProcessor(initialSettings: EqSettings) : BaseAudioProcessor() {
+class ParametricEqAudioProcessor(
+ initialSettings: EqSettings,
+ initialLiveStage: LiveStageSettings = LiveStageSettings()
+) : BaseAudioProcessor() {
  private val settingsReference = AtomicReference(initialSettings)
+ private val liveStageReference = AtomicReference(initialLiveStage)
  private var appliedSettings: EqSettings? = null
+ private var appliedLiveStage: LiveStageSettings? = null
  private var filters: Array<Biquad> = emptyArray()
  private var channelStates: Array<Array<FilterState>> = emptyArray()
  private var linearPreamp = 1.0
+ private var stageProcessor: SpatialStageProcessor? = null
 
  fun updateSettings(settings: EqSettings) {
   settingsReference.set(settings)
+ }
+
+ fun updateLiveStage(settings: LiveStageSettings) {
+  liveStageReference.set(settings)
  }
 
  override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
@@ -42,28 +52,42 @@ class ParametricEqAudioProcessor(initialSettings: EqSettings) : BaseAudioProcess
  override fun queueInput(inputBuffer: ByteBuffer) {
   if (!inputBuffer.hasRemaining()) return
   val settings = settingsReference.get()
+  val liveStage = liveStageReference.get()
   if (settings != appliedSettings || channelStates.size != inputAudioFormat.channelCount) {
    configureFilters(settings)
   }
+  if (liveStage != appliedLiveStage || stageProcessor == null) {
+   stageProcessor = SpatialStageProcessor(inputAudioFormat.sampleRate, liveStage)
+   appliedLiveStage = liveStage
+  }
 
   val output = replaceOutputBuffer(inputBuffer.remaining())
-  if (!settings.enabled) {
+  if (!settings.enabled && !liveStage.enabled) {
    output.put(inputBuffer)
    output.flip()
    return
   }
 
   while (inputBuffer.hasRemaining()) {
-   repeat(inputAudioFormat.channelCount) { channel ->
-    val sample = when (inputAudioFormat.encoding) {
+   val frame = DoubleArray(inputAudioFormat.channelCount) { channel ->
+    val input = when (inputAudioFormat.encoding) {
      C.ENCODING_PCM_16BIT -> inputBuffer.getShort() / 32768.0
      C.ENCODING_PCM_FLOAT -> inputBuffer.getFloat().toDouble()
      else -> 0.0
     }
-    var processed = sample * linearPreamp
-    filters.forEachIndexed { index, filter ->
-     processed = filter.process(processed, channelStates[channel][index])
+    if (settings.enabled) {
+     var processed = input * linearPreamp
+     filters.forEachIndexed { index, filter ->
+      processed = filter.process(processed, channelStates[channel][index])
+     }
+     processed
+    } else {
+     input
     }
+   }
+   if (liveStage.enabled) stageProcessor?.process(frame)
+   repeat(inputAudioFormat.channelCount) { channel ->
+    var processed = frame[channel]
     if (settings.limiterEnabled) processed = processed.coerceIn(-0.98, 0.98)
     when (inputAudioFormat.encoding) {
      C.ENCODING_PCM_16BIT -> output.putShort((processed.coerceIn(-1.0, 1.0) * 32767.0).toInt().toShort())
@@ -76,12 +100,15 @@ class ParametricEqAudioProcessor(initialSettings: EqSettings) : BaseAudioProcess
 
  override fun onFlush() {
   clearStates()
+  stageProcessor?.clear()
  }
 
  override fun onReset() {
   appliedSettings = null
   filters = emptyArray()
   channelStates = emptyArray()
+  appliedLiveStage = null
+  stageProcessor = null
  }
 
  private fun configureFilters(settings: EqSettings) {
@@ -96,6 +123,91 @@ class ParametricEqAudioProcessor(initialSettings: EqSettings) : BaseAudioProcess
 
  private fun clearStates() {
   channelStates.forEach { channel -> channel.forEach(FilterState::clear) }
+ }
+}
+
+private class SpatialStageProcessor(
+ private val sampleRate: Int,
+ private val settings: LiveStageSettings
+) {
+ private val maxDelay = (sampleRate * 0.18f).toInt().coerceAtLeast(1)
+ private val leftDelay = DoubleArray(maxDelay)
+ private val rightDelay = DoubleArray(maxDelay)
+ private val lowState = DoubleArray(2)
+ private val subState = DoubleArray(2)
+ private val airState = DoubleArray(2)
+ private val distanceState = DoubleArray(2)
+ private var delayIndex = 0
+
+ fun process(frame: DoubleArray) {
+  if (frame.size < 2) return
+  var left = tone(frame[0], 0)
+  var right = tone(frame[1], 1)
+
+  val mid = (left + right) * 0.5
+  val side = (left - right) * 0.5 * settings.stageWidth
+  left = mid + side
+  right = mid - side
+
+  val distanceAmount = settings.distance * 0.42
+  distanceState[0] += 0.18 * (left - distanceState[0])
+  distanceState[1] += 0.18 * (right - distanceState[1])
+  left = left * (1.0 - distanceAmount) + distanceState[0] * distanceAmount
+  right = right * (1.0 - distanceAmount) + distanceState[1] * distanceAmount
+
+  val delaySamples = (sampleRate * venueDelaySeconds()).toInt().coerceIn(1, maxDelay - 1)
+  val readIndex = (delayIndex - delaySamples + maxDelay) % maxDelay
+  val delayedLeft = leftDelay[readIndex]
+  val delayedRight = rightDelay[readIndex]
+  val feedback = 0.18 + settings.distance * 0.2
+  leftDelay[delayIndex] = left + delayedRight * feedback
+  rightDelay[delayIndex] = right + delayedLeft * feedback
+  delayIndex = (delayIndex + 1) % maxDelay
+
+  val wet = venueWetMix() * (0.45 + settings.distance * 0.55)
+  frame[0] = left * (1.0 - wet) + delayedLeft * wet
+  frame[1] = right * (1.0 - wet) + delayedRight * wet
+ }
+
+ fun clear() {
+  leftDelay.fill(0.0)
+  rightDelay.fill(0.0)
+  lowState.fill(0.0)
+  subState.fill(0.0)
+  airState.fill(0.0)
+  distanceState.fill(0.0)
+  delayIndex = 0
+ }
+
+ private fun tone(input: Double, channel: Int): Double {
+  val lowAlpha = onePoleAlpha(180.0)
+  val subAlpha = onePoleAlpha(70.0)
+  val airAlpha = onePoleAlpha(6_000.0)
+  lowState[channel] += lowAlpha * (input - lowState[channel])
+  subState[channel] += subAlpha * (input - subState[channel])
+  airState[channel] += airAlpha * (input - airState[channel])
+  val punch = lowState[channel] - subState[channel]
+  val high = input - airState[channel]
+  return input + punch * ((settings.impact - 0.5) * 0.34) +
+   subState[channel] * ((settings.subImpact - 0.5) * 0.42) +
+   high * ((settings.air - 0.5) * 0.30)
+ }
+
+ private fun onePoleAlpha(frequency: Double): Double =
+  1.0 - kotlin.math.exp(-2.0 * PI * frequency / sampleRate)
+
+ private fun venueDelaySeconds() = when (settings.venue) {
+  StageVenue.CLUB -> 0.024f
+  StageVenue.HALL -> 0.047f
+  StageVenue.ARENA -> 0.073f
+  StageVenue.STADIUM -> 0.118f
+ }
+
+ private fun venueWetMix() = when (settings.venue) {
+  StageVenue.CLUB -> 0.10
+  StageVenue.HALL -> 0.16
+  StageVenue.ARENA -> 0.21
+  StageVenue.STADIUM -> 0.26
  }
 }
 

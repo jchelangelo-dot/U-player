@@ -12,12 +12,15 @@ import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionError
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.uplayer.app.dsp.EqCommand
 import com.uplayer.app.dsp.EqSettingsStore
+import com.uplayer.app.dsp.LiveStageCommand
+import com.uplayer.app.dsp.LiveStageSettingsStore
 import com.uplayer.app.dsp.ParametricEqAudioProcessor
 
 @OptIn(UnstableApi::class)
@@ -28,7 +31,8 @@ class PlaybackService : MediaSessionService() {
  override fun onCreate() {
   super.onCreate()
   val eqStore = EqSettingsStore(this)
-  eqProcessor = ParametricEqAudioProcessor(eqStore.load())
+  val liveStageStore = LiveStageSettingsStore(this)
+  eqProcessor = ParametricEqAudioProcessor(eqStore.load(), liveStageStore.load())
   val renderersFactory = object : DefaultRenderersFactory(this) {
    override fun buildAudioSink(
     context: Context,
@@ -46,6 +50,7 @@ class PlaybackService : MediaSessionService() {
    setHandleAudioBecomingNoisy(true)
   }
   val updateEqCommand = SessionCommand(EqCommand.ACTION_UPDATE, Bundle.EMPTY)
+  val updateLiveStageCommand = SessionCommand(LiveStageCommand.ACTION_UPDATE, Bundle.EMPTY)
   val callback = object : MediaSession.Callback {
    override fun onConnect(
     session: MediaSession,
@@ -54,6 +59,7 @@ class PlaybackService : MediaSessionService() {
     val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
      .buildUpon()
      .add(updateEqCommand)
+     .add(updateLiveStageCommand)
      .build()
     return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
      .setAvailableSessionCommands(commands)
@@ -66,13 +72,20 @@ class PlaybackService : MediaSessionService() {
     customCommand: SessionCommand,
     args: Bundle
    ): ListenableFuture<SessionResult> {
-    if (customCommand.customAction != EqCommand.ACTION_UPDATE) {
-     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED))
+    when (customCommand.customAction) {
+     EqCommand.ACTION_UPDATE -> {
+      val settings = EqCommand.fromBundle(args)
+       ?: return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
+      eqProcessor.updateSettings(settings)
+      eqStore.save(settings)
+     }
+     LiveStageCommand.ACTION_UPDATE -> {
+      val settings = LiveStageCommand.fromBundle(args)
+      eqProcessor.updateLiveStage(settings)
+      liveStageStore.save(settings)
+     }
+     else -> return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
     }
-    val settings = EqCommand.fromBundle(args)
-     ?: return Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_BAD_VALUE))
-    eqProcessor.updateSettings(settings)
-    eqStore.save(settings)
     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
    }
   }

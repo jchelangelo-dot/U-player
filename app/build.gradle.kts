@@ -21,4 +21,5 @@ dependencies {
  implementation("androidx.media3:media3-session:1.8.0")
  implementation("androidx.media3:media3-ui-compose:1.8.0")
  implementation("com.google.guava:guava:33.4.8-android")
+ implementation("com.microsoft.onnxruntime:onnxruntime-android:1.30.0")
 }

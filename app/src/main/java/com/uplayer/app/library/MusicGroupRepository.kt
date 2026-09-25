@@ -45,6 +45,17 @@ class MusicGroupRepository(context: Context) {
  fun delete(groupId: String, current: List<MusicGroup>): List<MusicGroup> =
   current.filterNot { it.id == groupId }.also(::save)
 
+ fun loadFavorites(): Set<Long> = preferences.getStringSet(KEY_FAVORITES, emptySet())
+  .orEmpty()
+  .mapNotNull(String::toLongOrNull)
+  .toSet()
+
+ fun toggleFavorite(trackId: Long, current: Set<Long>): Set<Long> {
+  val updated = if (trackId in current) current - trackId else current + trackId
+  preferences.edit().putStringSet(KEY_FAVORITES, updated.map(Long::toString).toSet()).apply()
+  return updated
+ }
+
  private fun save(groups: List<MusicGroup>) {
   val json = JSONArray()
   groups.forEach { group ->
@@ -60,5 +71,6 @@ class MusicGroupRepository(context: Context) {
 
  private companion object {
   const val KEY_GROUPS = "groups"
+  const val KEY_FAVORITES = "favorites"
  }
 }

@@ -34,6 +34,8 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -243,13 +245,19 @@ private fun LibraryScreen(
  var query by remember { mutableStateOf("") }
  var sort by remember { mutableStateOf(LibrarySort.TITLE) }
  var groups by remember { mutableStateOf(groupRepository.load()) }
+ var favorites by remember { mutableStateOf(groupRepository.loadFavorites()) }
+ var favoritesOnly by remember { mutableStateOf(false) }
  var selectedGroupId by remember { mutableStateOf<String?>(null) }
  var showCreateGroup by remember { mutableStateOf(false) }
  var groupToEdit by remember { mutableStateOf<MusicGroup?>(null) }
  var groupToDelete by remember { mutableStateOf<MusicGroup?>(null) }
  val selectedGroup = groups.firstOrNull { it.id == selectedGroupId }
- val visibleTracks = remember(tracks, query, sort, selectedGroup) {
-  val groupedTracks = selectedGroup?.let { group -> tracks.filter { it.id in group.trackIds } } ?: tracks
+ val visibleTracks = remember(tracks, query, sort, selectedGroup, favoritesOnly, favorites) {
+  val groupedTracks = when {
+   favoritesOnly -> tracks.filter { it.id in favorites }
+   selectedGroup != null -> tracks.filter { it.id in selectedGroup.trackIds }
+   else -> tracks
+  }
   groupedTracks
    .filter { track ->
     query.isBlank() || track.title.contains(query, ignoreCase = true) ||
@@ -274,6 +282,7 @@ private fun LibraryScreen(
   Text(
    if (player == null) "CONNECTING PLAYER..."
    else if (query.isNotBlank()) "SEARCH  •  ${visibleTracks.size} TRACKS"
+   else if (favoritesOnly) "FAVORITES  •  ${visibleTracks.size} TRACKS"
    else if (selectedGroup != null) "${selectedGroup.name.uppercase()}  •  ${visibleTracks.size} TRACKS"
    else "LIBRARY  •  ${tracks.size} TRACKS",
    color = Ultramarine,
@@ -316,12 +325,17 @@ private fun LibraryScreen(
    horizontalArrangement = Arrangement.spacedBy(2.dp)
   ) {
    item {
-    TextButton(onClick = { selectedGroupId = null }) {
-     Text("ALL", color = if (selectedGroupId == null) Color.White else SecondaryText, fontSize = 10.sp)
+    TextButton(onClick = { selectedGroupId = null; favoritesOnly = false }) {
+     Text("ALL", color = if (selectedGroupId == null && !favoritesOnly) Color.White else SecondaryText, fontSize = 10.sp)
+    }
+   }
+   item {
+    TextButton(onClick = { selectedGroupId = null; favoritesOnly = true }) {
+     Text("FAVORITES", color = if (favoritesOnly) Color.White else SecondaryText, fontSize = 10.sp)
     }
    }
    itemsIndexed(groups, key = { _, group -> group.id }) { _, group ->
-    TextButton(onClick = { selectedGroupId = group.id }) {
+    TextButton(onClick = { selectedGroupId = group.id; favoritesOnly = false }) {
      Text(group.name, color = if (selectedGroupId == group.id) Color.White else SecondaryText, fontSize = 10.sp, maxLines = 1)
     }
    }
@@ -346,24 +360,45 @@ private fun LibraryScreen(
   }
   LazyColumn(Modifier.weight(1f).padding(top = 12.dp)) {
    itemsIndexed(visibleTracks, key = { _, track -> track.id }) { index, track ->
-    Column(
+    Row(
      Modifier
       .fillMaxWidth()
       .clickable(enabled = player != null) { onTrackSelected(visibleTracks, index) }
-      .padding(horizontal = 24.dp, vertical = 12.dp)
+      .padding(start = 24.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+     verticalAlignment = Alignment.CenterVertically
     ) {
-     Text(
-      track.title,
-      color = if (player == null) SecondaryText else Color.White,
-      maxLines = 1,
-      overflow = TextOverflow.Ellipsis
-     )
-     Text("${track.artist}  ·  ${track.album}", color = SecondaryText, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+     Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
+      Text(
+       track.title,
+       color = if (player == null) SecondaryText else Color.White,
+       maxLines = 1,
+       overflow = TextOverflow.Ellipsis
+      )
+      Text("${track.artist}  ·  ${track.album}", color = SecondaryText, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+     }
+     IconButton(onClick = { favorites = groupRepository.toggleFavorite(track.id, favorites) }) {
+      Icon(
+       if (track.id in favorites) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+       contentDescription = if (track.id in favorites) "Remove from favorites" else "Add to favorites",
+       tint = if (track.id in favorites) Ultramarine else SecondaryText,
+       modifier = Modifier.size(19.dp)
+      )
+     }
     }
    }
    if (visibleTracks.isEmpty() && tracks.isNotEmpty()) {
     item {
-     Text("검색 결과가 없습니다.", color = SecondaryText, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 24.dp, vertical = 28.dp))
+     Text(
+      when {
+       query.isNotBlank() -> "검색 결과가 없습니다."
+       favoritesOnly -> "하트를 눌러 좋아하는 곡을 추가하세요."
+       selectedGroup != null -> "EDIT SONGS에서 이 그룹에 곡을 추가하세요."
+       else -> "표시할 곡이 없습니다."
+      },
+      color = SecondaryText,
+      fontSize = 12.sp,
+      modifier = Modifier.padding(horizontal = 24.dp, vertical = 28.dp)
+     )
     }
    }
   }
@@ -377,6 +412,7 @@ private fun LibraryScreen(
     val updated = groupRepository.create(name, groups)
     groups = updated
     selectedGroupId = updated.lastOrNull()?.id
+    favoritesOnly = false
     showCreateGroup = false
    }
   )

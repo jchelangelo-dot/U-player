@@ -3,7 +3,6 @@ package com.uplayer.app.focus
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,6 +19,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,6 +33,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -60,12 +62,39 @@ fun FocusSessionScreen(
  var error by remember(trackId) { mutableStateOf<String?>(null) }
  var settings by remember(trackId) { mutableStateOf(FocusMixSettings()) }
  var rendering by remember(trackId) { mutableStateOf(false) }
+ var hasUserChanges by remember(trackId) { mutableStateOf(false) }
+ var latestSessionFile by remember(trackId) { mutableStateOf<File?>(null) }
+
+ fun updateSettings(value: FocusMixSettings) {
+  settings = value
+  hasUserChanges = true
+ }
 
  fun originalAndBack() {
   if (sessionActive) onPlayOriginal()
   onBack()
  }
  BackHandler(onBack = ::originalAndBack)
+
+ LaunchedEffect(settings, ready, hasUserChanges) {
+  if (!ready || !hasUserChanges) return@LaunchedEffect
+  delay(180L)
+  rendering = true
+  error = null
+  try {
+   val file = withContext(Dispatchers.IO) {
+    FocusSessionMixer.render(analyzer.sessionDirectory(trackId), settings)
+   }
+   latestSessionFile = file
+   onPlaySession(file)
+  } catch (cancelled: CancellationException) {
+   throw cancelled
+  } catch (failure: Throwable) {
+   error = failure.message ?: "Session 생성에 실패했습니다"
+  } finally {
+   rendering = false
+  }
+ }
 
  Column(Modifier.fillMaxSize().background(FocusBackground).statusBarsPadding()) {
   Row(
@@ -79,7 +108,6 @@ fun FocusSessionScreen(
     Text("SESSION FOCUS", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Medium)
     Text(title, color = FocusText, fontSize = 10.sp, maxLines = 1)
    }
-   Text(if (sessionActive) "SESSION" else "ORIGINAL", color = if (sessionActive) FocusUltra else FocusText, fontSize = 10.sp)
   }
   HorizontalDivider(color = FocusHairline, thickness = 0.5.dp)
 
@@ -129,43 +157,47 @@ fun FocusSessionScreen(
    Modifier.fillMaxWidth().padding(horizontal = 10.dp),
    horizontalArrangement = Arrangement.SpaceEvenly
   ) {
-   FocusChannel("VOCAL", settings.vocal) { settings = settings.copy(vocal = it) }
-   FocusChannel("DRUMS", settings.drums) { settings = settings.copy(drums = it) }
-   FocusChannel("BASS", settings.bass) { settings = settings.copy(bass = it) }
-   FocusChannel("GUITAR", settings.guitar) { settings = settings.copy(guitar = it) }
+   FocusChannel("VOCAL", settings.vocal) { updateSettings(settings.copy(vocal = it)) }
+   FocusChannel("DRUMS", settings.drums) { updateSettings(settings.copy(drums = it)) }
+   FocusChannel("BASS", settings.bass) { updateSettings(settings.copy(bass = it)) }
+   FocusChannel("GUITAR", settings.guitar) { updateSettings(settings.copy(guitar = it)) }
   }
   HorizontalDivider(color = FocusHairline, thickness = 0.5.dp, modifier = Modifier.padding(horizontal = 24.dp, vertical = 22.dp))
   TextButton(
-   enabled = !rendering,
    onClick = {
-    rendering = true
-    scope.launch {
-     runCatching {
-      withContext(Dispatchers.IO) { FocusSessionMixer.render(analyzer.sessionDirectory(trackId), settings) }
-     }.onSuccess(onPlaySession).onFailure { error = it.message ?: "Session 생성에 실패했습니다" }
-     rendering = false
-    }
-   },
-   modifier = Modifier.align(Alignment.CenterHorizontally)
-  ) {
-   Text(if (rendering) "BUILDING SESSION…" else "APPLY SESSION", color = if (rendering) FocusText else FocusUltra)
-  }
-  Row(
-   Modifier.fillMaxWidth().padding(horizontal = 42.dp, vertical = 18.dp).clickable {
-    if (sessionActive) onPlayOriginal() else {
+    if (sessionActive) {
+     onPlayOriginal()
+    } else {
+     latestSessionFile?.takeIf(File::isFile)?.let(onPlaySession) ?: run {
      scope.launch {
       rendering = true
-      val file = withContext(Dispatchers.IO) { FocusSessionMixer.render(analyzer.sessionDirectory(trackId), settings) }
-      onPlaySession(file)
-      rendering = false
+      try {
+       val file = withContext(Dispatchers.IO) {
+        FocusSessionMixer.render(analyzer.sessionDirectory(trackId), settings)
+       }
+       latestSessionFile = file
+       onPlaySession(file)
+      } catch (failure: Throwable) {
+       error = failure.message ?: "Session 생성에 실패했습니다"
+      } finally {
+       rendering = false
+      }
+     }
      }
     }
    },
-   horizontalArrangement = Arrangement.SpaceBetween
+   enabled = !rendering,
+   modifier = Modifier.align(Alignment.CenterHorizontally).padding(vertical = 10.dp)
   ) {
-   Text("ORIGINAL", color = if (!sessionActive) Color.White else FocusText, fontSize = 11.sp)
-   Text("↔", color = FocusUltra, fontSize = 13.sp)
-   Text("SESSION", color = if (sessionActive) Color.White else FocusText, fontSize = 11.sp)
+   Text(
+    when {
+     rendering -> "UPDATING SESSION…"
+     sessionActive -> "ORIGINAL · OFF"
+     else -> "ORIGINAL · ON"
+    },
+    color = if (sessionActive) FocusText else FocusUltra,
+    fontSize = 11.sp
+   )
   }
   error?.let { Text(it, color = Color(0xFFFF6B6B), fontSize = 10.sp, modifier = Modifier.padding(horizontal = 24.dp)) }
  }

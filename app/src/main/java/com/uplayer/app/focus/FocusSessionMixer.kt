@@ -3,6 +3,8 @@ package com.uplayer.app.focus
 import java.io.File
 import java.io.RandomAccessFile
 import kotlin.math.pow
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 data class FocusChannelSettings(
  val gainDb: Float = 0f,
@@ -26,18 +28,22 @@ data class FocusMixSettings(
 }
 
 object FocusSessionMixer {
- fun render(directory: File, settings: FocusMixSettings): File {
+ suspend fun render(directory: File, settings: FocusMixSettings): File {
   val sources = FocusStem.entries.associateWith { RandomAccessFile(File(directory, it.fileName), "r") }
-  val outputFile = File(directory, "session_mix.wav")
-  val output = RandomAccessFile(outputFile, "rw").apply { setLength(0); write(ByteArray(44)) }
+  val version = System.nanoTime()
+  val temporaryFile = File(directory, "session_mix_$version.tmp")
+  val outputFile = File(directory, "session_mix_$version.wav")
+  val output = RandomAccessFile(temporaryFile, "rw").apply { setLength(0); write(ByteArray(44)) }
   val anySolo = listOf(settings.vocal, settings.drums, settings.bass, settings.guitar).any(FocusChannelSettings::solo)
   val totalFrames = ((sources.values.minOf { it.length() } - 44L) / 4L).coerceAtLeast(0L)
   sources.values.forEach { it.seek(44L) }
   val framesPerBlock = 16_384
   val sourceBuffers = FocusStem.entries.associateWith { ByteArray(framesPerBlock * 4) }
   var framesWritten = 0L
+  var completed = false
   try {
    while (framesWritten < totalFrames) {
+    currentCoroutineContext().ensureActive()
     val frameCount = minOf(framesPerBlock.toLong(), totalFrames - framesWritten).toInt()
     FocusStem.entries.forEach { stem -> sources.getValue(stem).readFully(sourceBuffers.getValue(stem), 0, frameCount * 4) }
     val mixed = ByteArray(frameCount * 4)
@@ -67,11 +73,25 @@ object FocusSessionMixer {
    }
    output.seek(0L)
    output.write(wavHeader(framesWritten * 4L))
+   completed = true
   } finally {
    sources.values.forEach { it.close() }
    output.close()
+   if (!completed) temporaryFile.delete()
   }
+  if (!temporaryFile.renameTo(outputFile)) {
+   temporaryFile.copyTo(outputFile, overwrite = true)
+   temporaryFile.delete()
+  }
+  cleanupOldMixes(directory, outputFile)
   return outputFile
+ }
+
+ private fun cleanupOldMixes(directory: File, current: File) {
+  directory.listFiles()?.filter { file ->
+   file != current && (file.name == "session_mix.wav" ||
+    (file.name.startsWith("session_mix_") && file.extension == "wav"))
+  }?.sortedByDescending(File::lastModified)?.drop(1)?.forEach(File::delete)
  }
 
  private fun shortAt(bytes: ByteArray, offset: Int): Short =

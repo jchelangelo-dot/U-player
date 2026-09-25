@@ -2,6 +2,7 @@ package com.uplayer.app.lyrics
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -76,6 +77,8 @@ fun LyricsScreen(
  var combinedLyrics by remember(trackId) { mutableStateOf(document.toCombinedText()) }
  var displayMode by remember { mutableStateOf(LyricsDisplayMode.ALL) }
  var readerFontSize by remember { mutableFloatStateOf(repository.loadFontSizeSp()) }
+ var syncing by remember(trackId) { mutableStateOf(false) }
+ var selectedSyncIndex by remember(trackId) { mutableStateOf(0) }
 
  BackHandler(onBack = onBack)
 
@@ -101,6 +104,16 @@ fun LyricsScreen(
     editing = !editing
    }) {
     Text(if (editing) "SAVE" else "EDIT", color = LyricsUltra, fontSize = 11.sp)
+   }
+   if (!editing && !document.isEmpty) {
+    TextButton(onClick = {
+     if (!syncing) {
+      selectedSyncIndex = currentLineIndex(document.toRows(), positionMs, durationMs).coerceAtLeast(0)
+     }
+     syncing = !syncing
+    }) {
+     Text(if (syncing) "DONE" else "SYNC", color = LyricsUltra, fontSize = 11.sp)
+    }
    }
   }
   HorizontalDivider(color = LyricsHairline, thickness = 0.5.dp)
@@ -140,8 +153,80 @@ fun LyricsScreen(
      Text("+", color = LyricsUltra, fontSize = 18.sp)
     }
    }
-   LyricsReader(document, displayMode, readerFontSize, positionMs, durationMs)
+   if (syncing) {
+    TimingCorrectionPanel(
+     lineIndex = selectedSyncIndex.coerceIn(0, document.rowCount.coerceAtLeast(1) - 1),
+     lineCount = document.rowCount,
+     timestampMs = document.timestampAt(selectedSyncIndex, durationMs),
+     positionMs = positionMs,
+     onPrevious = { selectedSyncIndex = (selectedSyncIndex - 1).coerceAtLeast(0) },
+     onNext = { selectedSyncIndex = (selectedSyncIndex + 1).coerceAtMost(document.rowCount - 1) },
+     onAdjust = { amountMs ->
+      document = document.withAdjustedTimestamp(selectedSyncIndex, amountMs, durationMs)
+      repository.save(trackId, document)
+     },
+     onSetToCurrentPosition = {
+      document = document.withTimestamp(selectedSyncIndex, positionMs, durationMs)
+      repository.save(trackId, document)
+     }
+    )
+   }
+   LyricsReader(
+    document = document,
+    mode = displayMode,
+    fontSize = readerFontSize,
+    positionMs = positionMs,
+    durationMs = durationMs,
+    syncing = syncing,
+    selectedSyncIndex = selectedSyncIndex,
+    onSelectSyncLine = { selectedSyncIndex = it }
+   )
   }
+ }
+}
+
+@Composable
+private fun TimingCorrectionPanel(
+ lineIndex: Int,
+ lineCount: Int,
+ timestampMs: Long,
+ positionMs: Long,
+ onPrevious: () -> Unit,
+ onNext: () -> Unit,
+ onAdjust: (Long) -> Unit,
+ onSetToCurrentPosition: () -> Unit
+) {
+ Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 6.dp)) {
+  Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+   Column(Modifier.weight(1f)) {
+    Text("TIMING CORRECTION · ${lineIndex + 1}/${lineCount.coerceAtLeast(1)}", color = LyricsUltra, fontSize = 10.sp)
+    Text(
+     "줄 시작 ${formatClock(timestampMs)} · 현재 재생 ${formatClock(positionMs)}",
+     color = LyricsSecondary,
+     fontSize = 10.sp,
+     modifier = Modifier.padding(top = 3.dp)
+    )
+   }
+   TextButton(onClick = onPrevious, enabled = lineIndex > 0) {
+    Text("이전", color = if (lineIndex > 0) Color.White else LyricsSecondary, fontSize = 10.sp)
+   }
+   TextButton(onClick = onNext, enabled = lineIndex < lineCount - 1) {
+    Text("다음", color = if (lineIndex < lineCount - 1) Color.White else LyricsSecondary, fontSize = 10.sp)
+   }
+  }
+  Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+   TextButton(onClick = { onAdjust(-500L) }) {
+    Text("− 0.5초", color = LyricsUltra, fontSize = 12.sp)
+   }
+   TextButton(onClick = onSetToCurrentPosition) {
+    Text("현재 위치로 맞춤", color = Color.White, fontSize = 11.sp)
+   }
+   TextButton(onClick = { onAdjust(500L) }) {
+    Text("+ 0.5초", color = LyricsUltra, fontSize = 12.sp)
+   }
+  }
+  Text("−는 더 일찍 · +는 더 늦게 표시합니다. 가사 줄을 눌러 선택할 수 있습니다.", color = LyricsSecondary, fontSize = 9.sp)
+  HorizontalDivider(color = LyricsHairline, thickness = 0.5.dp, modifier = Modifier.padding(top = 10.dp))
  }
 }
 
@@ -209,15 +294,19 @@ private fun LyricsReader(
  mode: LyricsDisplayMode,
  fontSize: Float,
  positionMs: Long,
- durationMs: Long
+ durationMs: Long,
+ syncing: Boolean,
+ selectedSyncIndex: Int,
+ onSelectSyncLine: (Int) -> Unit
 ) {
  val rows = remember(document) { document.toRows() }
  val currentIndex = remember(rows, positionMs, durationMs) {
   currentLineIndex(rows, positionMs, durationMs)
  }
  val listState = rememberLazyListState()
- LaunchedEffect(currentIndex) {
-  if (currentIndex >= 0) listState.animateScrollToItem((currentIndex - 1).coerceAtLeast(0))
+ val focusedIndex = if (syncing) selectedSyncIndex else currentIndex
+ LaunchedEffect(focusedIndex, syncing) {
+  if (focusedIndex >= 0) listState.animateScrollToItem((focusedIndex - 1).coerceAtLeast(0))
  }
  if (rows.all { it.original.isBlank() && it.pronunciation.isBlank() && it.translation.isBlank() }) {
   Column(
@@ -233,12 +322,25 @@ private fun LyricsReader(
 
  LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp)) {
   itemsIndexed(rows) { index, row ->
-   Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(vertical = 14.dp)) {
+   Row(
+    Modifier
+     .fillMaxWidth()
+     .height(IntrinsicSize.Min)
+     .background(if (syncing && index == selectedSyncIndex) LyricsUltra.copy(alpha = 0.08f) else Color.Transparent)
+     .clickable(enabled = syncing) { onSelectSyncLine(index) }
+     .padding(vertical = 14.dp)
+   ) {
     Box(
      Modifier
       .width(3.dp)
       .fillMaxHeight()
-      .background(if (index == currentIndex) LyricsUltra else Color.Transparent)
+      .background(
+       when {
+        index == currentIndex -> LyricsUltra
+        syncing && index == selectedSyncIndex -> Color.White
+        else -> Color.Transparent
+       }
+      )
     )
     Spacer(Modifier.width(12.dp))
     Column(Modifier.weight(1f)) {
@@ -284,6 +386,35 @@ private fun LyricsDocument.toRows(): List<LyricsRow> {
  }
 }
 
+private val LyricsDocument.rowCount: Int
+ get() = maxOf(original.lines().size, pronunciation.lines().size, translation.lines().size)
+
+private fun LyricsDocument.timeline(durationMs: Long): List<Long> {
+ val count = rowCount
+ if (count <= 0) return emptyList()
+ val usableDuration = durationMs.coerceAtLeast(count * 1_000L)
+ return List(count) { index ->
+  timestampsMs.getOrNull(index)?.takeIf { it >= 0L }
+   ?: (usableDuration * index / count)
+ }
+}
+
+private fun LyricsDocument.timestampAt(index: Int, durationMs: Long): Long =
+ timeline(durationMs).getOrElse(index) { 0L }
+
+private fun LyricsDocument.withAdjustedTimestamp(index: Int, amountMs: Long, durationMs: Long): LyricsDocument =
+ withTimestamp(index, timestampAt(index, durationMs) + amountMs, durationMs)
+
+private fun LyricsDocument.withTimestamp(index: Int, timestampMs: Long, durationMs: Long): LyricsDocument {
+ val values = timeline(durationMs).toMutableList()
+ if (index !in values.indices) return this
+ val minimum = if (index == 0) 0L else values[index - 1] + 100L
+ val maximumFromDuration = durationMs.takeIf { it > 0L } ?: Long.MAX_VALUE
+ val maximum = if (index == values.lastIndex) maximumFromDuration else minOf(values[index + 1] - 100L, maximumFromDuration)
+ values[index] = timestampMs.coerceIn(minimum, maximum.coerceAtLeast(minimum))
+ return copy(timestampsMs = values)
+}
+
 private fun parseCombinedLyrics(text: String): LyricsDocument {
  val lines = text.replace("\r\n", "\n").lines().map(String::trim).filter(String::isNotEmpty)
  val groups = lines.chunked(3)
@@ -325,6 +456,12 @@ private fun formatTimestamp(milliseconds: Long): String {
  val seconds = totalSeconds % 60L
  val hundredths = (milliseconds % 1_000L) / 10L
  return String.format(Locale.US, "[%02d:%02d.%02d]", minutes, seconds, hundredths)
+}
+
+private fun formatClock(milliseconds: Long): String {
+ val safeMilliseconds = milliseconds.coerceAtLeast(0L)
+ val totalSeconds = safeMilliseconds / 1_000L
+ return String.format(Locale.US, "%02d:%02d.%01d", totalSeconds / 60L, totalSeconds % 60L, (safeMilliseconds % 1_000L) / 100L)
 }
 
 private fun currentLineIndex(rows: List<LyricsRow>, positionMs: Long, durationMs: Long): Int {

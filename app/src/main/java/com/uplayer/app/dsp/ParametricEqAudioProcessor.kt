@@ -149,7 +149,7 @@ private class SpatialStageProcessor(
   left = mid + side
   right = mid - side
 
-  val distanceAmount = settings.distance * 0.42
+  val distanceAmount = settings.distance * 0.55
   distanceState[0] += 0.18 * (left - distanceState[0])
   distanceState[1] += 0.18 * (right - distanceState[1])
   left = left * (1.0 - distanceAmount) + distanceState[0] * distanceAmount
@@ -159,12 +159,12 @@ private class SpatialStageProcessor(
   val readIndex = (delayIndex - delaySamples + maxDelay) % maxDelay
   val delayedLeft = leftDelay[readIndex]
   val delayedRight = rightDelay[readIndex]
-  val feedback = 0.18 + settings.distance * 0.2
+  val feedback = 0.22 + settings.distance * 0.28
   leftDelay[delayIndex] = left + delayedRight * feedback
   rightDelay[delayIndex] = right + delayedLeft * feedback
   delayIndex = (delayIndex + 1) % maxDelay
 
-  val wet = venueWetMix() * (0.45 + settings.distance * 0.55)
+  val wet = venueWetMix() * (0.62 + settings.distance * 0.58)
   frame[0] = left * (1.0 - wet) + delayedLeft * wet
   frame[1] = right * (1.0 - wet) + delayedRight * wet
  }
@@ -188,9 +188,9 @@ private class SpatialStageProcessor(
   airState[channel] += airAlpha * (input - airState[channel])
   val punch = lowState[channel] - subState[channel]
   val high = input - airState[channel]
-  return input + punch * ((settings.impact - 0.5) * 0.34) +
-   subState[channel] * ((settings.subImpact - 0.5) * 0.42) +
-   high * ((settings.air - 0.5) * 0.30)
+  return input + punch * ((settings.impact - 0.5) * 0.56) +
+   subState[channel] * ((settings.subImpact - 0.5) * 0.62) +
+   high * ((settings.air - 0.5) * 0.46)
  }
 
  private fun onePoleAlpha(frequency: Double): Double =
@@ -204,10 +204,10 @@ private class SpatialStageProcessor(
  }
 
  private fun venueWetMix() = when (settings.venue) {
-  StageVenue.CLUB -> 0.10
-  StageVenue.HALL -> 0.16
-  StageVenue.ARENA -> 0.21
-  StageVenue.STADIUM -> 0.26
+  StageVenue.CLUB -> 0.14
+  StageVenue.HALL -> 0.21
+  StageVenue.ARENA -> 0.27
+  StageVenue.STADIUM -> 0.32
  }
 }
 

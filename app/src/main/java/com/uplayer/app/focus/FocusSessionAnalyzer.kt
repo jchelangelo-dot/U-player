@@ -1,10 +1,6 @@
 package com.uplayer.app.focus
 
 import android.content.Context
-import android.media.AudioFormat
-import android.media.MediaCodec
-import android.media.MediaExtractor
-import android.media.MediaFormat
 import android.net.Uri
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
@@ -13,7 +9,6 @@ import java.io.File
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
-import java.nio.ByteOrder
 import java.security.MessageDigest
 import kotlin.math.ceil
 import kotlin.math.max
@@ -31,22 +26,27 @@ class FocusSessionAnalyzer(private val context: Context) {
 
  fun sessionDirectory(trackId: String) = File(context.filesDir, "focus_sessions/$trackId")
 
- fun isReady(trackId: String): Boolean = FocusStem.entries.all { File(sessionDirectory(trackId), it.fileName).isFile }
+ fun isReady(trackId: String): Boolean = FocusStem.entries.all {
+  File(sessionDirectory(trackId), it.fileName).let { file -> file.isFile && file.length() > 44L }
+ }
 
  suspend fun analyze(trackId: String, uri: Uri, onProgress: (FocusAnalysisProgress) -> Unit) {
   ensureModel(onProgress)
   onProgress(FocusAnalysisProgress(0.16f, "음원을 PCM으로 준비하는 중"))
-  val audio = decodeAudio(uri)
   val directory = sessionDirectory(trackId).apply { mkdirs() }
+  val decoded = AudioPcmDecoder.decode(context, uri, File(context.cacheDir, "focus_${trackId.hashCode()}.pcm")) { fraction ->
+   onProgress(FocusAnalysisProgress(0.16f + fraction * 0.08f, "음원을 PCM으로 준비하는 중 ${(fraction * 100).toInt()}%"))
+  }
   val writers = FocusStem.entries.associateWith { WavStreamWriter(File(directory, it.fileName), SAMPLE_RATE) }
   try {
-   runModel(audio, writers, onProgress)
+   runModel(decoded, writers, onProgress)
+   writers.values.forEach { it.close() }
   } catch (error: Throwable) {
    writers.values.forEach { it.abort() }
    directory.deleteRecursively()
    throw error
   } finally {
-   writers.values.forEach { it.close() }
+   decoded.close()
   }
   onProgress(FocusAnalysisProgress(1f, "Focus Session 준비 완료"))
  }
@@ -88,14 +88,14 @@ class FocusSessionAnalyzer(private val context: Context) {
  }
 
  private suspend fun runModel(
-  audio: StereoPcm,
+  audio: DecodedPcmFile,
   writers: Map<FocusStem, WavStreamWriter>,
   onProgress: (FocusAnalysisProgress) -> Unit
  ) {
   val environment = OrtEnvironment.getEnvironment()
   val options = OrtSession.SessionOptions().apply { setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT) }
   environment.createSession(modelFile.absolutePath, options).use { session ->
-   val totalSamples = audio.left.size
+   val totalSamples = audio.targetFrameCount
    val chunks = max(1, ceil(totalSamples.toDouble() / STRIDE).toInt())
    val input = FloatArray(2 * SEGMENT_SAMPLES)
    repeat(chunks) { chunkIndex ->
@@ -103,12 +103,11 @@ class FocusSessionAnalyzer(private val context: Context) {
     val start = chunkIndex * STRIDE
     val chunkLength = minOf(SEGMENT_SAMPLES, totalSamples - start)
     input.fill(0f)
-    audio.left.copyInto(input, 0, start, start + chunkLength)
-    audio.right.copyInto(input, SEGMENT_SAMPLES, start, start + chunkLength)
+    audio.readModelInput(start, chunkLength, input)
     OnnxTensor.createTensor(environment, java.nio.FloatBuffer.wrap(input), longArrayOf(1, 2, SEGMENT_SAMPLES.toLong())).use { tensor ->
      session.run(mapOf("mix" to tensor)).use { result ->
       val output = (result[0] as OnnxTensor).floatBuffer
-      fun stem(row: Int): Pair<FloatArray, FloatArray> {
+      fun writeStem(row: Int, target: FocusStem) {
        val left = FloatArray(chunkLength)
        val right = FloatArray(chunkLength)
        val base = row * 2 * SEGMENT_SAMPLES
@@ -116,93 +115,28 @@ class FocusSessionAnalyzer(private val context: Context) {
         left[sample] = output.get(base + sample)
         right[sample] = output.get(base + SEGMENT_SAMPLES + sample)
        }
-       return left to right
+       writers.getValue(target).append(left, right, chunkIndex, chunks)
       }
-      val drums = stem(0)
-      val bass = stem(1)
-      val other = stem(2)
-      val vocals = stem(3)
-      val guitar = stem(4)
-      val piano = stem(5)
-      val residualLeft = FloatArray(chunkLength) { other.first[it] + piano.first[it] }
-      val residualRight = FloatArray(chunkLength) { other.second[it] + piano.second[it] }
-      writers.getValue(FocusStem.DRUMS).append(drums.first, drums.second, chunkIndex, chunks)
-      writers.getValue(FocusStem.BASS).append(bass.first, bass.second, chunkIndex, chunks)
-      writers.getValue(FocusStem.VOCAL).append(vocals.first, vocals.second, chunkIndex, chunks)
-      writers.getValue(FocusStem.GUITAR).append(guitar.first, guitar.second, chunkIndex, chunks)
+      writeStem(0, FocusStem.DRUMS)
+      writeStem(1, FocusStem.BASS)
+      writeStem(3, FocusStem.VOCAL)
+      writeStem(4, FocusStem.GUITAR)
+      val residualLeft = FloatArray(chunkLength)
+      val residualRight = FloatArray(chunkLength)
+      val otherBase = 2 * 2 * SEGMENT_SAMPLES
+      val pianoBase = 5 * 2 * SEGMENT_SAMPLES
+      repeat(chunkLength) { sample ->
+       residualLeft[sample] = output.get(otherBase + sample) + output.get(pianoBase + sample)
+       residualRight[sample] = output.get(otherBase + SEGMENT_SAMPLES + sample) +
+        output.get(pianoBase + SEGMENT_SAMPLES + sample)
+      }
       writers.getValue(FocusStem.RESIDUAL).append(residualLeft, residualRight, chunkIndex, chunks)
      }
     }
-    val progress = 0.20f + ((chunkIndex + 1f) / chunks) * 0.78f
+    val progress = 0.24f + ((chunkIndex + 1f) / chunks) * 0.74f
     onProgress(FocusAnalysisProgress(progress, "음원 분리 ${chunkIndex + 1}/$chunks"))
    }
   }
- }
-
- private fun decodeAudio(uri: Uri): StereoPcm {
-  val extractor = MediaExtractor()
-  extractor.setDataSource(context, uri, null)
-  val trackIndex = (0 until extractor.trackCount).firstOrNull {
-   extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
-  } ?: error("재생 가능한 오디오 트랙이 없습니다")
-  extractor.selectTrack(trackIndex)
-  val format = extractor.getTrackFormat(trackIndex)
-  val mime = format.getString(MediaFormat.KEY_MIME) ?: error("오디오 형식을 확인할 수 없습니다")
-  val decoder = MediaCodec.createDecoderByType(mime)
-  decoder.configure(format, null, null, 0)
-  decoder.start()
-  val samples = FloatCollector()
-  var inputEnded = false
-  var outputEnded = false
-  var channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-  var sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-  var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
-  val info = MediaCodec.BufferInfo()
-  try {
-   while (!outputEnded) {
-    if (!inputEnded) {
-     val inputIndex = decoder.dequeueInputBuffer(10_000)
-     if (inputIndex >= 0) {
-      val buffer = decoder.getInputBuffer(inputIndex)!!
-      val size = extractor.readSampleData(buffer, 0)
-      if (size < 0) {
-       decoder.queueInputBuffer(inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-       inputEnded = true
-      } else {
-       decoder.queueInputBuffer(inputIndex, 0, size, extractor.sampleTime, 0)
-       extractor.advance()
-      }
-     }
-    }
-    when (val outputIndex = decoder.dequeueOutputBuffer(info, 10_000)) {
-     MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-      val outputFormat = decoder.outputFormat
-      channels = outputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-      sampleRate = outputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-      pcmEncoding = if (outputFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) outputFormat.getInteger(MediaFormat.KEY_PCM_ENCODING) else AudioFormat.ENCODING_PCM_16BIT
-     }
-     else -> if (outputIndex >= 0) {
-      decoder.getOutputBuffer(outputIndex)?.apply {
-       order(ByteOrder.LITTLE_ENDIAN)
-       position(info.offset)
-       limit(info.offset + info.size)
-       if (pcmEncoding == AudioFormat.ENCODING_PCM_FLOAT) {
-        while (remaining() >= 4) samples.add(float)
-       } else {
-        while (remaining() >= 2) samples.add(short / 32768f)
-       }
-      }
-      outputEnded = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
-      decoder.releaseOutputBuffer(outputIndex, false)
-     }
-    }
-   }
-  } finally {
-   decoder.stop()
-   decoder.release()
-   extractor.release()
-  }
-  return samples.toStereo(channels, sampleRate).resample(SAMPLE_RATE)
  }
 
  private companion object {
@@ -227,40 +161,6 @@ private fun File.sha256(): String {
   }
  }
  return digest.digest().joinToString("") { "%02x".format(it) }
-}
-
-private data class StereoPcm(val left: FloatArray, val right: FloatArray, val sampleRate: Int) {
- fun resample(targetRate: Int): StereoPcm {
-  if (sampleRate == targetRate) return this
-  val targetSize = (left.size.toLong() * targetRate / sampleRate).toInt()
-  fun channel(source: FloatArray) = FloatArray(targetSize) { index ->
-   val position = index.toDouble() * sampleRate / targetRate
-   val base = position.toInt().coerceIn(0, source.lastIndex)
-   val next = (base + 1).coerceAtMost(source.lastIndex)
-   val fraction = (position - base).toFloat()
-   source[base] * (1f - fraction) + source[next] * fraction
-  }
-  return StereoPcm(channel(left), channel(right), targetRate)
- }
-}
-
-private class FloatCollector {
- private var values = FloatArray(1 shl 20)
- private var size = 0
- fun add(value: Float) {
-  if (size == values.size) values = values.copyOf(values.size * 2)
-  values[size++] = value
- }
- fun toStereo(channels: Int, sampleRate: Int): StereoPcm {
-  val frames = size / channels.coerceAtLeast(1)
-  val left = FloatArray(frames)
-  val right = FloatArray(frames)
-  for (frame in 0 until frames) {
-   left[frame] = values[frame * channels]
-   right[frame] = if (channels > 1) values[frame * channels + 1] else left[frame]
-  }
-  return StereoPcm(left, right, sampleRate)
- }
 }
 
 private class WavStreamWriter(private val file: File, private val sampleRate: Int) : AutoCloseable {

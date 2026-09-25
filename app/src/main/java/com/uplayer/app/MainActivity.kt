@@ -265,6 +265,7 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onRefresh:
     )
     AppScreen.LIVE_STAGE -> LiveStageScreen(
      settings = liveStageSettings,
+     mediaUri = (if (focusSessionActive) focusOriginalItem else player?.currentMediaItem)?.localConfiguration?.uri,
      onSettingsChanged = ::updateLiveStage,
      onBack = { screen = AppScreen.PLAYER }
     )

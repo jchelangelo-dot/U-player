@@ -1,5 +1,6 @@
 package com.uplayer.app.dsp
 
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -20,19 +21,29 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private val StageBackground = Color(0xFF02040A)
 private val StageUltra = Color(0xFF315CFF)
@@ -42,9 +53,16 @@ private val StageHairline = Color(0xFF182038)
 @Composable
 fun LiveStageScreen(
  settings: LiveStageSettings,
+ mediaUri: Uri?,
  onSettingsChanged: (LiveStageSettings) -> Unit,
  onBack: () -> Unit
 ) {
+ val context = LocalContext.current
+ val analyzer = remember(context) { LiveStageAutoAnalyzer(context.applicationContext) }
+ val scope = rememberCoroutineScope()
+ var analysisProgress by remember(mediaUri) { mutableStateOf<Float?>(null) }
+ var analysisSummary by remember(mediaUri) { mutableStateOf<String?>(null) }
+ var analysisError by remember(mediaUri) { mutableStateOf<String?>(null) }
  BackHandler(onBack = onBack)
  Column(
   Modifier.fillMaxSize().background(StageBackground).statusBarsPadding().verticalScroll(rememberScrollState())
@@ -65,6 +83,38 @@ fun LiveStageScreen(
   HorizontalDivider(color = StageHairline, thickness = 0.5.dp)
 
   StageVisual(settings)
+
+  Column(Modifier.padding(horizontal = 24.dp, vertical = 4.dp)) {
+   TextButton(
+    enabled = mediaUri != null && analysisProgress == null,
+    onClick = {
+     val uri = mediaUri ?: return@TextButton
+     analysisError = null
+     analysisSummary = null
+     analysisProgress = 0f
+     scope.launch {
+      runCatching {
+       withContext(Dispatchers.IO) {
+        analyzer.analyze(uri) { value -> scope.launch { analysisProgress = value } }
+       }
+      }.onSuccess { recommendation ->
+       onSettingsChanged(recommendation.settings)
+       analysisSummary = recommendation.summary
+      }.onFailure { analysisError = it.message ?: "곡 분석에 실패했습니다" }
+      analysisProgress = null
+     }
+    }
+   ) {
+    Text(if (analysisProgress == null) "ANALYZE & AUTO TUNE" else "ANALYZING…", color = if (analysisProgress == null) StageUltra else StageText)
+   }
+   analysisProgress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth()) }
+   Text(
+    analysisSummary ?: analysisError ?: "곡의 스테레오 폭·저역·타격감·다이내믹을 읽어 효과를 자동 조정합니다.",
+    color = if (analysisError != null) Color(0xFFFF6B6B) else StageText,
+    fontSize = 9.sp,
+    lineHeight = 15.sp
+   )
+  }
 
   Text("VENUE", color = StageUltra, fontSize = 10.sp, letterSpacing = 1.2.sp, modifier = Modifier.padding(horizontal = 24.dp))
   Row(

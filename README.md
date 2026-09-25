@@ -14,8 +14,8 @@ Android local music player focused on high-quality listening, parametric EQ, and
 - Library browsing by songs, albums, artists, and folders; persistent groups and favorites.
 - Restored queue, position, shuffle, and repeat state after relaunch.
 - User EQ presets plus the built-in genre starting points.
-- Live Stage stereo width, distance, impact, sub impact, air, room presets, and Original/Session A/B.
-- Focus Session on-device separation into vocals, drums, bass, guitar, and residual accompaniment, with gain, solo, mute, and Original/Session A/B.
+- Live Stage per-track audio analysis and automatic tuning, plus stereo width, distance, impact, sub impact, air, room presets, and Original/Session A/B.
+- Focus Session memory-safe, file-backed chunk separation into vocals, drums, bass, guitar, and residual accompaniment, with gain, solo, mute, and Original/Session A/B.
 
 Focus Session downloads the MIT-licensed HTDemucs 6-stem ONNX model on first analysis (about 136 MB), then stores the model and per-track stems locally. Separation can take several minutes on a phone and uses substantial storage because the cached stems are uncompressed PCM.
 

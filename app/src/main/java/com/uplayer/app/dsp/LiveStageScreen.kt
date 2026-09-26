@@ -19,6 +19,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uplayer.app.focus.FocusAnalysisProgress
+import com.uplayer.app.focus.FocusCacheManager
 import com.uplayer.app.focus.FocusChannelSettings
 import com.uplayer.app.focus.FocusMixSettings
 import com.uplayer.app.focus.FocusMixSettingsStore
@@ -83,6 +85,7 @@ fun LiveStageScreen(
  val context = LocalContext.current
  val stageAnalyzer = remember(context) { LiveStageAutoAnalyzer(context.applicationContext) }
  val focusAnalyzer = remember(context) { FocusSessionAnalyzer(context.applicationContext) }
+ val focusCacheManager = remember(context) { FocusCacheManager(context.applicationContext) }
  val focusSettingsStore = remember(context) { FocusMixSettingsStore(context.applicationContext) }
  val scope = rememberCoroutineScope()
  var stageProgress by remember(mediaUri) { mutableStateOf<Float?>(null) }
@@ -100,6 +103,9 @@ fun LiveStageScreen(
    else null
   )
  }
+ var cacheInfo by remember(trackId, focusReady) { mutableStateOf(focusCacheManager.snapshot(trackId)) }
+ var showCacheManager by remember { mutableStateOf(false) }
+ var confirmClearAnalysis by remember { mutableStateOf(false) }
 
  fun updateFocus(value: FocusMixSettings) {
   focusSettings = value
@@ -122,6 +128,7 @@ fun LiveStageScreen(
     FocusSessionMixer.render(focusAnalyzer.sessionDirectory(trackId), focusSettings)
    }
    latestSessionFile = file
+   cacheInfo = focusCacheManager.snapshot(trackId)
    onPlaySession(file)
   } catch (cancelled: CancellationException) {
    throw cancelled
@@ -298,7 +305,85 @@ fun LiveStageScreen(
    }
    focusError?.let { Text(it, color = StageMute, fontSize = 8.sp, modifier = Modifier.padding(horizontal = 24.dp)) }
   }
+  if (trackId.isNotBlank()) {
+   TextButton(
+    enabled = focusProgress == null && !rendering,
+    onClick = { cacheInfo = focusCacheManager.snapshot(trackId); showCacheManager = true },
+    modifier = Modifier.align(Alignment.CenterHorizontally)
+   ) {
+    Text("CACHE · ${formatCacheSize(cacheInfo.currentStemBytes + cacheInfo.currentMixBytes)}", color = StageMuted, fontSize = 7.sp)
+   }
+  }
  }
+
+ if (showCacheManager) {
+  AlertDialog(
+   onDismissRequest = { showCacheManager = false },
+   title = { Text("FOCUS CACHE", color = Color.White, fontSize = 14.sp) },
+   text = {
+    Column {
+     CacheLine("CURRENT STEMS", formatCacheSize(cacheInfo.currentStemBytes))
+     CacheLine("CURRENT MIXES", formatCacheSize(cacheInfo.currentMixBytes))
+     CacheLine("ALL ${cacheInfo.analyzedTrackCount} TRACKS", formatCacheSize(cacheInfo.allSessionBytes))
+     CacheLine("MODEL · KEPT", formatCacheSize(cacheInfo.modelBytes))
+     TextButton(
+      enabled = cacheInfo.currentMixBytes > 0L,
+      onClick = {
+       if (sessionActive) onPlayOriginal()
+       focusCacheManager.clearRenderedMixes(trackId)
+       latestSessionFile = null
+       cacheInfo = focusCacheManager.snapshot(trackId)
+      },
+      modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+     ) { Text("CLEAR CURRENT MIXES", color = StageUltra, fontSize = 9.sp) }
+     TextButton(
+      enabled = cacheInfo.currentStemBytes > 0L,
+      onClick = { confirmClearAnalysis = true },
+      modifier = Modifier.fillMaxWidth()
+     ) { Text("DELETE CURRENT ANALYSIS", color = StageMute, fontSize = 9.sp) }
+    }
+   },
+   confirmButton = { TextButton(onClick = { showCacheManager = false }) { Text("DONE", color = StageUltra) } },
+   containerColor = Color(0xFF080C16)
+  )
+ }
+
+ if (confirmClearAnalysis) {
+  AlertDialog(
+   onDismissRequest = { confirmClearAnalysis = false },
+   title = { Text("분석 데이터 삭제", color = Color.White) },
+   text = { Text("현재 곡의 분리된 stem과 믹스를 삭제할까요? 다시 사용하려면 분석이 필요합니다. 모델 파일은 유지됩니다.", color = StageLabel) },
+   confirmButton = {
+    TextButton(onClick = {
+     if (sessionActive) onPlayOriginal()
+     focusCacheManager.clearTrackAnalysis(trackId)
+     focusReady = false
+     latestSessionFile = null
+     hasFocusChanges = false
+     cacheInfo = focusCacheManager.snapshot(trackId)
+     confirmClearAnalysis = false
+     showCacheManager = false
+    }) { Text("DELETE", color = StageMute) }
+   },
+   dismissButton = { TextButton(onClick = { confirmClearAnalysis = false }) { Text("CANCEL", color = StageLabel) } },
+   containerColor = Color(0xFF080C16)
+  )
+ }
+}
+
+@Composable
+private fun CacheLine(label: String, value: String) {
+ Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+  Text(label, color = StageMuted, fontSize = 8.sp)
+  Text(value, color = StageLabel, fontSize = 8.sp)
+ }
+}
+
+private fun formatCacheSize(bytes: Long): String = when {
+ bytes >= 1_073_741_824L -> String.format(Locale.US, "%.1f GB", bytes / 1_073_741_824.0)
+ bytes >= 1_048_576L -> String.format(Locale.US, "%.0f MB", bytes / 1_048_576.0)
+ bytes >= 1_024L -> String.format(Locale.US, "%.0f KB", bytes / 1_024.0)
+ else -> "$bytes B"
 }
 
 @Composable

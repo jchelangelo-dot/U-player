@@ -42,6 +42,11 @@ class MusicGroupRepository(context: Context) {
  fun update(group: MusicGroup, current: List<MusicGroup>): List<MusicGroup> =
   current.map { if (it.id == group.id) group else it }.also(::save)
 
+ fun addTracks(groupId: String, trackIds: Set<Long>, current: List<MusicGroup>): List<MusicGroup> =
+  current.map { group ->
+   if (group.id == groupId) group.copy(trackIds = group.trackIds + trackIds) else group
+  }.also(::save)
+
  fun delete(groupId: String, current: List<MusicGroup>): List<MusicGroup> =
   current.filterNot { it.id == groupId }.also(::save)
 

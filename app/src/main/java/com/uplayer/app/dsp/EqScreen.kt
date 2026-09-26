@@ -4,6 +4,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +44,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -48,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import java.util.Locale
 import kotlin.math.log10
 import kotlin.math.pow
+import kotlin.math.hypot
 
 private val V2Background = Color(0xFF02040A)
 private val V2Ultra = Color(0xFF315CFF)
@@ -60,7 +65,7 @@ fun EqScreen(
  settings: EqSettings,
  userPresets: List<EqUserPreset>,
  onSettingsChanged: (EqSettings) -> Unit,
- onSaveUserPreset: (String) -> Unit,
+ onSaveUserPreset: (String, EqSettings) -> Unit,
  onDeleteUserPreset: (String) -> Unit,
  onBack: () -> Unit
 ) {
@@ -85,7 +90,7 @@ fun EqScreen(
   Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
    Box(Modifier.weight(1f)) {
     Text(
-     settings.preset.label,
+     settings.displayName ?: settings.preset.label,
      color = V2Ultra,
      fontSize = 9.sp,
      modifier = Modifier.clickable { presetMenu = true }.padding(vertical = 10.dp)
@@ -99,8 +104,8 @@ fun EqScreen(
      }
      userPresets.forEach { preset ->
       DropdownMenuItem(
-       text = { Text(preset.name, color = V2Label, fontSize = 10.sp) },
-       onClick = { onSettingsChanged(preset.settings); presetMenu = false }
+       text = { Text(preset.name, color = if (settings.displayName == preset.name) V2Ultra else V2Label, fontSize = 10.sp) },
+       onClick = { onSettingsChanged(preset.settings.copy(displayName = preset.name)); presetMenu = false }
       )
      }
     }
@@ -109,7 +114,14 @@ fun EqScreen(
    Text("RESET", color = V2Muted, fontSize = 8.sp, modifier = Modifier.clickable { onSettingsChanged(EqSettings()) }.padding(10.dp))
   }
 
-  CompactEqGraph(settings, selectedBand) { selectedBand = it }
+  CompactEqGraph(
+   settings = settings,
+   selectedBand = selectedBand,
+   onSelected = { selectedBand = it },
+   onGainChanged = { index, gain ->
+    onSettingsChanged(settings.withBandV2(index, settings.bands[index].copy(gainDb = gain)))
+   }
+  )
 
   val band = settings.bands[selectedBand]
   val definition = EqSettings.bandDefinitions[selectedBand]
@@ -127,7 +139,7 @@ fun EqScreen(
     onSettingsChanged(settings.withBandV2(selectedBand, band.copy(q = 10f.pow(it))))
    }, Modifier.weight(1f), 68.dp)
    RotaryKnob("PREAMP", signedDbV2(settings.preampDb), settings.preampDb, -12f..6f, {
-    onSettingsChanged(settings.copy(preampDb = it))
+    onSettingsChanged(settings.copy(preampDb = it).customized())
    }, Modifier.weight(1f), 68.dp)
   }
 
@@ -136,7 +148,7 @@ fun EqScreen(
    horizontalArrangement = Arrangement.SpaceBetween,
    verticalAlignment = Alignment.CenterVertically
   ) {
-   Text("BAND ${(selectedBand + 1).toString().padStart(2, '0')}", color = V2Muted, fontSize = 8.sp)
+   Text("${definition.shortLabel} · ${definition.role}", color = V2Muted, fontSize = 8.sp)
    Text(
     band.type.label,
     color = V2Label,
@@ -153,7 +165,7 @@ fun EqScreen(
     Text("LIMITER", color = V2Label, fontSize = 9.sp)
     Switch(
      checked = settings.limiterEnabled,
-     onCheckedChange = { onSettingsChanged(settings.copy(limiterEnabled = it)) },
+     onCheckedChange = { onSettingsChanged(settings.copy(limiterEnabled = it).customized()) },
      modifier = Modifier.padding(start = 8.dp).scale(0.72f)
     )
    }
@@ -169,7 +181,16 @@ fun EqScreen(
    onDismissRequest = { showSave = false },
    title = { Text("EQ 프리셋 저장") },
    text = { OutlinedTextField(presetName, { if (it.length <= 32) presetName = it }, singleLine = true) },
-   confirmButton = { TextButton(enabled = presetName.isNotBlank(), onClick = { onSaveUserPreset(presetName); showSave = false }) { Text("저장") } },
+   confirmButton = {
+    TextButton(
+     enabled = presetName.isNotBlank(),
+     onClick = {
+      val name = presetName.trim()
+      onSaveUserPreset(name, settings.copy(displayName = name))
+      showSave = false
+     }
+    ) { Text("저장") }
+   },
    dismissButton = { TextButton(onClick = { showSave = false }) { Text("취소") } },
    containerColor = Color(0xFF080C16)
   )
@@ -177,8 +198,47 @@ fun EqScreen(
 }
 
 @Composable
-private fun CompactEqGraph(settings: EqSettings, selectedBand: Int, onSelected: (Int) -> Unit) {
- Canvas(Modifier.fillMaxWidth().height(230.dp).padding(vertical = 12.dp)) {
+private fun CompactEqGraph(
+ settings: EqSettings,
+ selectedBand: Int,
+ onSelected: (Int) -> Unit,
+ onGainChanged: (Int, Float) -> Unit
+) {
+ val bands = settings.bands
+ val currentBands = rememberUpdatedState(bands)
+ val currentSelected = rememberUpdatedState(onSelected)
+ val currentGainChanged = rememberUpdatedState(onGainChanged)
+ Canvas(
+  Modifier
+   .fillMaxWidth()
+   .height(230.dp)
+   .padding(vertical = 12.dp)
+   .pointerInput(Unit) {
+    detectTapGestures { tap ->
+     nearestBandIndex(tap, currentBands.value, size.width.toFloat(), size.height.toFloat(), 30.dp.toPx())?.let(currentSelected.value)
+    }
+   }
+   .pointerInput(Unit) {
+    var dragIndex = -1
+    var dragGain = 0f
+    detectDragGestures(
+     onDragStart = { start ->
+      val latestBands = currentBands.value
+      dragIndex = nearestBandIndex(start, latestBands, size.width.toFloat(), size.height.toFloat(), 34.dp.toPx()) ?: -1
+      if (dragIndex >= 0) {
+       dragGain = latestBands[dragIndex].gainDb
+       currentSelected.value(dragIndex)
+      }
+     },
+     onDrag = { change, dragAmount ->
+      if (dragIndex < 0) return@detectDragGestures
+      change.consume()
+      dragGain = (dragGain - dragAmount.y / size.height * 24f).coerceIn(-12f, 12f)
+      currentGainChanged.value(dragIndex, dragGain)
+     }
+    )
+   }
+ ) {
   repeat(7) { index ->
    val x = size.width * index / 6f
    drawLine(V2Grid, Offset(x, 0f), Offset(x, size.height), 0.5.dp.toPx())
@@ -187,11 +247,7 @@ private fun CompactEqGraph(settings: EqSettings, selectedBand: Int, onSelected: 
    val y = size.height * index / 4f
    drawLine(V2Grid, Offset(0f, y), Offset(size.width, y), 0.5.dp.toPx())
   }
-  val points = settings.bands.map { item ->
-   val x = ((log10(item.frequencyHz) - log10(20f)) / (log10(20_000f) - log10(20f))) * size.width
-   val y = size.height * (12f - item.gainDb.coerceIn(-12f, 12f)) / 24f
-   Offset(x, y)
-  }
+  val points = bands.map { graphPoint(it, size.width, size.height) }
   val path = Path().apply {
    points.forEachIndexed { index, point -> if (index == 0) moveTo(point.x, point.y) else lineTo(point.x, point.y) }
   }
@@ -201,9 +257,9 @@ private fun CompactEqGraph(settings: EqSettings, selectedBand: Int, onSelected: 
   }
  }
  Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-  settings.bands.forEachIndexed { index, _ ->
+  bands.forEachIndexed { index, _ ->
    Text(
-    (index + 1).toString().padStart(2, '0'),
+    EqSettings.bandDefinitions[index].shortLabel,
     color = if (index == selectedBand) V2Ultra else V2Muted,
     fontSize = 7.sp,
     modifier = Modifier.clickable { onSelected(index) }.padding(5.dp)
@@ -214,8 +270,29 @@ private fun CompactEqGraph(settings: EqSettings, selectedBand: Int, onSelected: 
 
 private fun EqSettings.withBandV2(index: Int, band: EqBand) = copy(
  preset = EqPreset.FLAT,
+ displayName = "CUSTOM",
  bands = bands.toMutableList().also { it[index] = band }
 )
+
+private fun EqSettings.customized() = copy(preset = EqPreset.FLAT, displayName = "CUSTOM")
+
+private fun graphPoint(band: EqBand, width: Float, height: Float): Offset {
+ val x = ((log10(band.frequencyHz) - log10(20f)) / (log10(20_000f) - log10(20f))) * width
+ val y = height * (12f - band.gainDb.coerceIn(-12f, 12f)) / 24f
+ return Offset(x, y)
+}
+
+private fun nearestBandIndex(
+ point: Offset,
+ bands: List<EqBand>,
+ width: Float,
+ height: Float,
+ threshold: Float
+): Int? = bands.indices
+ .map { index -> index to graphPoint(bands[index], width, height) }
+ .minByOrNull { (_, bandPoint) -> hypot(point.x - bandPoint.x, point.y - bandPoint.y) }
+ ?.takeIf { (_, bandPoint) -> hypot(point.x - bandPoint.x, point.y - bandPoint.y) <= threshold }
+ ?.first
 
 private fun compactFrequency(value: Float) = if (value >= 1_000f) String.format(Locale.US, "%.1fk", value / 1_000f) else "${value.toInt()} Hz"
 private fun signedDbV2(value: Float) = String.format(Locale.US, if (value >= 0f) "+%.1f dB" else "%.1f dB", value)

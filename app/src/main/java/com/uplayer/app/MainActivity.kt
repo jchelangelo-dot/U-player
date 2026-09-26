@@ -3,6 +3,7 @@ package com.uplayer.app
 import android.Manifest
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
@@ -13,9 +14,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,6 +31,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -36,14 +44,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -52,16 +61,14 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.SurroundSound
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -77,10 +84,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -101,6 +112,7 @@ import com.uplayer.app.library.AudioRepository
 import com.uplayer.app.library.MusicGroup
 import com.uplayer.app.library.MusicGroupRepository
 import com.uplayer.app.library.Track
+import com.uplayer.app.library.UserMusicFolderStore
 import com.uplayer.app.dsp.EqCommand
 import com.uplayer.app.dsp.EqScreen
 import com.uplayer.app.dsp.EqSettings
@@ -115,6 +127,7 @@ import com.uplayer.app.playback.PlaybackService
 import com.uplayer.app.playback.PlaybackStateStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
@@ -124,22 +137,32 @@ private val SecondaryText = Color(0xFF7D8495)
 
 private enum class AppScreen { LIBRARY, PLAYER, EQ, LIVE_STAGE, LYRICS }
 private enum class LibrarySort(val label: String) { TITLE("TITLE"), ARTIST("ARTIST"), ALBUM("ALBUM") }
-private enum class LibraryCategory(val label: String) { SONGS("SONGS"), ALBUMS("ALBUMS"), ARTISTS("ARTISTS"), FOLDERS("FOLDERS") }
+private enum class LibraryCategory(val label: String) { SONGS("SONGS"), ALBUMS("ALBUMS"), ARTISTS("ARTISTS") }
 
 class MainActivity : ComponentActivity() {
  private var controller by mutableStateOf<MediaController?>(null)
  private var tracks by mutableStateOf<List<Track>>(emptyList())
  private var controllerFuture: ListenableFuture<MediaController>? = null
+ private val folderStore by lazy { UserMusicFolderStore(applicationContext) }
 
  private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
   if (it) refreshLibrary()
+ }
+
+ private val folderLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+  uri ?: return@registerForActivityResult
+  runCatching {
+   contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+  }
+  folderStore.add(uri)
+  refreshLibrary()
  }
 
  override fun onCreate(savedInstanceState: Bundle?) {
   super.onCreate(savedInstanceState)
   connectController()
   requestAudioAndLoad()
-  setContent { UPlayerApp(tracks, controller) }
+  setContent { UPlayerApp(tracks, controller, onAddFolder = { folderLauncher.launch(null) }) }
  }
 
  override fun onResume() {
@@ -168,7 +191,11 @@ class MainActivity : ComponentActivity() {
  }
 
  private fun refreshLibrary() {
-  tracks = AudioRepository(this).loadTracks()
+  lifecycleScope.launch {
+   tracks = withContext(Dispatchers.IO) {
+    AudioRepository(applicationContext).loadTracks(folderStore.load())
+   }
+  }
  }
 
  override fun onDestroy() {
@@ -180,7 +207,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun UPlayerApp(tracks: List<Track>, player: MediaController?) {
+private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onAddFolder: () -> Unit) {
  var screen by remember { mutableStateOf(AppScreen.LIBRARY) }
  var focusOriginalItem by remember { mutableStateOf<MediaItem?>(null) }
  var focusSessionActive by remember { mutableStateOf(false) }
@@ -262,7 +289,10 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?) {
      settings = eqSettings,
      userPresets = eqUserPresets,
      onSettingsChanged = ::updateEq,
-     onSaveUserPreset = { name -> eqUserPresets = eqUserPresetStore.add(name, eqSettings, eqUserPresets) },
+     onSaveUserPreset = { name, namedSettings ->
+      updateEq(namedSettings)
+      eqUserPresets = eqUserPresetStore.add(name, namedSettings, eqUserPresets)
+     },
      onDeleteUserPreset = { id -> eqUserPresets = eqUserPresetStore.delete(id, eqUserPresets) },
      onBack = { screen = AppScreen.PLAYER }
     )
@@ -310,6 +340,7 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?) {
       tracks = tracks,
       player = player,
       playback = playback,
+      onAddFolder = onAddFolder,
       onTrackSelected = { queue, index ->
        player?.apply {
         setMediaItems(queue.map(Track::asMediaItem), index, 0L)
@@ -325,11 +356,13 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?) {
  }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LibraryScreen(
  tracks: List<Track>,
  player: Player?,
  playback: PlaybackUiState,
+ onAddFolder: () -> Unit,
  onTrackSelected: (List<Track>, Int) -> Unit,
  onOpenPlayer: () -> Unit
 ) {
@@ -340,15 +373,17 @@ private fun LibraryScreen(
  var category by remember { mutableStateOf(LibraryCategory.SONGS) }
  var groups by remember { mutableStateOf(groupRepository.load()) }
  var favorites by remember { mutableStateOf(groupRepository.loadFavorites()) }
- var favoritesOnly by remember { mutableStateOf(false) }
  var selectedGroupId by remember { mutableStateOf<String?>(null) }
  var showCreateGroup by remember { mutableStateOf(false) }
  var groupToEdit by remember { mutableStateOf<MusicGroup?>(null) }
  var groupToDelete by remember { mutableStateOf<MusicGroup?>(null) }
+ var selectingSongs by remember { mutableStateOf(false) }
+ var selectedTrackIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+ var tracksToAdd by remember { mutableStateOf<Set<Long>>(emptySet()) }
+ var showPlaylistPicker by remember { mutableStateOf(false) }
  val selectedGroup = groups.firstOrNull { it.id == selectedGroupId }
- val visibleTracks = remember(tracks, query, sort, category, selectedGroup, favoritesOnly, favorites) {
+ val visibleTracks = remember(tracks, query, sort, category, selectedGroup, favorites) {
   val groupedTracks = when {
-   favoritesOnly -> tracks.filter { it.id in favorites }
    selectedGroup != null -> tracks.filter { it.id in selectedGroup.trackIds }
    else -> tracks
   }
@@ -362,7 +397,6 @@ private fun LibraryScreen(
     when (category) {
      LibraryCategory.ALBUMS -> filtered.sortedWith(compareBy<Track> { it.album.lowercase(Locale.getDefault()) }.thenBy { it.title.lowercase(Locale.getDefault()) })
      LibraryCategory.ARTISTS -> filtered.sortedWith(compareBy<Track> { it.artist.lowercase(Locale.getDefault()) }.thenBy { it.title.lowercase(Locale.getDefault()) })
-     LibraryCategory.FOLDERS -> filtered.sortedWith(compareBy<Track> { it.folder.lowercase(Locale.getDefault()) }.thenBy { it.title.lowercase(Locale.getDefault()) })
      LibraryCategory.SONGS -> when (sort) {
       LibrarySort.TITLE -> filtered.sortedBy { it.title.lowercase(Locale.getDefault()) }
       LibrarySort.ARTIST -> filtered.sortedWith(compareBy<Track> { it.artist.lowercase(Locale.getDefault()) }.thenBy { it.title.lowercase(Locale.getDefault()) })
@@ -376,8 +410,27 @@ private fun LibraryScreen(
    Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp),
    verticalAlignment = Alignment.CenterVertically
   ) {
-   Text("LIBRARY", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Normal, modifier = Modifier.weight(1f))
-   Text("${tracks.size} TRACKS", color = Color(0xFF626979), fontSize = 8.sp)
+   Text("PLAYLISTS", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Normal, modifier = Modifier.weight(1f))
+   if (selectingSongs) {
+    TextButton(onClick = { selectingSongs = false; selectedTrackIds = emptySet() }) {
+     Text("CANCEL", color = SecondaryText, fontSize = 8.sp)
+    }
+    TextButton(
+     enabled = selectedTrackIds.isNotEmpty(),
+     onClick = { tracksToAdd = selectedTrackIds; showPlaylistPicker = true }
+    ) { Text("ADD ${selectedTrackIds.size}", color = if (selectedTrackIds.isEmpty()) SecondaryText else Ultramarine, fontSize = 8.sp) }
+   } else {
+    IconButton(onClick = onAddFolder, modifier = Modifier.size(36.dp)) {
+     Icon(Icons.Default.CreateNewFolder, contentDescription = "Add music folder", tint = SecondaryText, modifier = Modifier.size(17.dp))
+    }
+    TextButton(
+     onClick = {
+      if (selectedGroup != null) groupToEdit = selectedGroup else selectingSongs = true
+     },
+     enabled = selectedGroup != null || category == LibraryCategory.SONGS
+    ) { Text("EDIT", color = if (selectedGroup != null || category == LibraryCategory.SONGS) Ultramarine else SecondaryText, fontSize = 8.sp) }
+   }
+   Text("${tracks.size} TRACKS", color = Color(0xFF626979), fontSize = 8.sp, modifier = Modifier.padding(start = 6.dp))
   }
   Row(
    Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 6.dp),
@@ -408,29 +461,27 @@ private fun LibraryScreen(
    verticalAlignment = Alignment.CenterVertically
   ) {
    LibraryCategory.entries.forEach { option ->
-    TextButton(onClick = { category = option; selectedGroupId = null; favoritesOnly = false }) {
+    TextButton(onClick = { category = option; selectedGroupId = null; selectingSongs = false; selectedTrackIds = emptySet() }) {
      Text(option.label, color = if (category == option && selectedGroupId == null) Ultramarine else Color(0xFF626979), fontSize = 9.sp)
     }
    }
-   TextButton(onClick = { showCreateGroup = true }) { Text("+", color = Ultramarine, fontSize = 13.sp) }
    groups.forEach { group ->
-    TextButton(onClick = { selectedGroupId = group.id; favoritesOnly = false }) {
+    TextButton(onClick = { selectedGroupId = group.id; category = LibraryCategory.SONGS; selectingSongs = false; selectedTrackIds = emptySet() }) {
      Text(group.name.uppercase(), color = if (selectedGroupId == group.id) Ultramarine else Color(0xFF626979), fontSize = 9.sp, maxLines = 1)
     }
    }
+   TextButton(onClick = { showCreateGroup = true }) { Text("+", color = Ultramarine, fontSize = 13.sp) }
   }
   LazyColumn(Modifier.weight(1f).padding(top = 4.dp)) {
    itemsIndexed(visibleTracks, key = { _, track -> track.id }) { index, track ->
     val section = when (category) {
      LibraryCategory.ALBUMS -> track.album
      LibraryCategory.ARTISTS -> track.artist
-     LibraryCategory.FOLDERS -> track.folder
      LibraryCategory.SONGS -> null
     }
     val previousSection = if (index > 0) when (category) {
      LibraryCategory.ALBUMS -> visibleTracks[index - 1].album
      LibraryCategory.ARTISTS -> visibleTracks[index - 1].artist
-     LibraryCategory.FOLDERS -> visibleTracks[index - 1].folder
      LibraryCategory.SONGS -> null
     } else null
     if (section != null && section != previousSection) {
@@ -445,10 +496,33 @@ private fun LibraryScreen(
     Row(
      Modifier
       .fillMaxWidth()
-      .clickable(enabled = player != null) { onTrackSelected(visibleTracks, index) }
+      .combinedClickable(
+       enabled = player != null || selectingSongs,
+       onClick = {
+        if (selectingSongs) {
+         selectedTrackIds = if (track.id in selectedTrackIds) selectedTrackIds - track.id else selectedTrackIds + track.id
+        } else {
+         onTrackSelected(visibleTracks, index)
+        }
+       },
+       onLongClick = {
+        if (selectedGroup == null) {
+         tracksToAdd = setOf(track.id)
+         showPlaylistPicker = true
+        }
+       }
+      )
       .padding(start = 24.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
      verticalAlignment = Alignment.CenterVertically
     ) {
+     if (selectingSongs) {
+      Checkbox(
+       checked = track.id in selectedTrackIds,
+       onCheckedChange = { checked ->
+        selectedTrackIds = if (checked) selectedTrackIds + track.id else selectedTrackIds - track.id
+       }
+      )
+     }
      Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
       Text(
        track.title,
@@ -458,7 +532,7 @@ private fun LibraryScreen(
       )
       Text("${track.artist}  ·  ${track.album}", color = SecondaryText, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
      }
-     IconButton(onClick = { favorites = groupRepository.toggleFavorite(track.id, favorites) }) {
+     if (!selectingSongs) IconButton(onClick = { favorites = groupRepository.toggleFavorite(track.id, favorites) }) {
       Icon(
        if (track.id in favorites) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
        contentDescription = if (track.id in favorites) "Remove from favorites" else "Add to favorites",
@@ -473,8 +547,7 @@ private fun LibraryScreen(
      Text(
       when {
        query.isNotBlank() -> "검색 결과가 없습니다."
-       favoritesOnly -> "하트를 눌러 좋아하는 곡을 추가하세요."
-       selectedGroup != null -> "EDIT SONGS에서 이 그룹에 곡을 추가하세요."
+       selectedGroup != null -> "아래의 곡 추가하기를 눌러 플레이리스트를 채워보세요."
        else -> "표시할 곡이 없습니다."
       },
       color = SecondaryText,
@@ -484,6 +557,15 @@ private fun LibraryScreen(
     }
    }
   }
+  if (selectedGroup != null) {
+   TextButton(
+    onClick = { groupToEdit = selectedGroup },
+    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp)
+   ) {
+    Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null, tint = Ultramarine, modifier = Modifier.size(17.dp))
+    Text("곡 추가하기", color = Ultramarine, fontSize = 10.sp, modifier = Modifier.padding(start = 7.dp))
+   }
+  }
   MiniPlayer(player, playback, onOpenPlayer)
  }
 
@@ -491,11 +573,33 @@ private fun LibraryScreen(
   CreateGroupDialog(
    onDismiss = { showCreateGroup = false },
    onCreate = { name ->
-    val updated = groupRepository.create(name, groups)
+    var updated = groupRepository.create(name, groups)
+    val created = updated.lastOrNull()
+    if (created != null && tracksToAdd.isNotEmpty()) {
+     updated = groupRepository.addTracks(created.id, tracksToAdd, updated)
+    }
     groups = updated
-    selectedGroupId = updated.lastOrNull()?.id
-    favoritesOnly = false
+    selectedGroupId = created?.id
+    category = LibraryCategory.SONGS
+    tracksToAdd = emptySet()
     showCreateGroup = false
+   }
+  )
+ }
+ if (showPlaylistPicker) {
+  PlaylistPickerDialog(
+   groups = groups,
+   onDismiss = { showPlaylistPicker = false },
+   onPlaylistSelected = { groupId ->
+    groups = groupRepository.addTracks(groupId, tracksToAdd, groups)
+    showPlaylistPicker = false
+    selectingSongs = false
+    selectedTrackIds = emptySet()
+    tracksToAdd = emptySet()
+   },
+   onCreatePlaylist = {
+    showPlaylistPicker = false
+    showCreateGroup = true
    }
   )
  }
@@ -528,12 +632,12 @@ private fun CreateGroupDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit)
  var name by remember { mutableStateOf("") }
  AlertDialog(
   onDismissRequest = onDismiss,
-  title = { Text("새 그룹", color = Color.White) },
+  title = { Text("새 플레이리스트", color = Color.White) },
   text = {
    OutlinedTextField(
     value = name,
     onValueChange = { if (it.length <= 40) name = it },
-    label = { Text("그룹 이름") },
+    label = { Text("플레이리스트 이름") },
     singleLine = true
    )
   },
@@ -542,6 +646,39 @@ private fun CreateGroupDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit)
     Text("만들기", color = if (name.isNotBlank()) Ultramarine else SecondaryText)
    }
   },
+  dismissButton = { TextButton(onClick = onDismiss) { Text("취소", color = SecondaryText) } },
+  containerColor = Color(0xFF080C16)
+ )
+}
+
+@Composable
+private fun PlaylistPickerDialog(
+ groups: List<MusicGroup>,
+ onDismiss: () -> Unit,
+ onPlaylistSelected: (String) -> Unit,
+ onCreatePlaylist: () -> Unit
+) {
+ AlertDialog(
+  onDismissRequest = onDismiss,
+  title = { Text("플레이리스트에 추가", color = Color.White) },
+  text = {
+   Column {
+    if (groups.isEmpty()) {
+     Text("먼저 플레이리스트를 만들어주세요.", color = SecondaryText, fontSize = 11.sp)
+    } else {
+     groups.forEach { group ->
+      Row(
+       Modifier.fillMaxWidth().clickable { onPlaylistSelected(group.id) }.padding(vertical = 12.dp),
+       verticalAlignment = Alignment.CenterVertically
+      ) {
+       Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null, tint = Ultramarine, modifier = Modifier.size(18.dp))
+       Text(group.name, color = Color.White, fontSize = 12.sp, modifier = Modifier.padding(start = 10.dp).weight(1f))
+      }
+     }
+    }
+   }
+  },
+  confirmButton = { TextButton(onClick = onCreatePlaylist) { Text("새 플레이리스트", color = Ultramarine) } },
   dismissButton = { TextButton(onClick = onDismiss) { Text("취소", color = SecondaryText) } },
   containerColor = Color(0xFF080C16)
  )
@@ -560,7 +697,7 @@ private fun EditGroupTracksDialog(
   title = { Text(group.name, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis) },
   text = {
    Column {
-    Text("그룹에 넣을 곡을 선택하세요.", color = SecondaryText, fontSize = 11.sp, modifier = Modifier.padding(bottom = 8.dp))
+    Text("플레이리스트에 넣을 곡을 선택하세요.", color = SecondaryText, fontSize = 11.sp, modifier = Modifier.padding(bottom = 8.dp))
     LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
      itemsIndexed(tracks, key = { _, track -> track.id }) { _, track ->
       Row(
@@ -594,8 +731,8 @@ private fun EditGroupTracksDialog(
 private fun DeleteGroupDialog(group: MusicGroup, onDismiss: () -> Unit, onDelete: () -> Unit) {
  AlertDialog(
   onDismissRequest = onDismiss,
-  title = { Text("그룹 삭제", color = Color.White) },
-  text = { Text("‘${group.name}’ 그룹을 삭제할까요? 음악 파일은 삭제되지 않습니다.", color = SecondaryText) },
+  title = { Text("플레이리스트 삭제", color = Color.White) },
+  text = { Text("‘${group.name}’ 플레이리스트를 삭제할까요? 음악 파일은 삭제되지 않습니다.", color = SecondaryText) },
   confirmButton = { TextButton(onClick = onDelete) { Text("삭제", color = Color(0xFFFF6B6B)) } },
   dismissButton = { TextButton(onClick = onDismiss) { Text("취소", color = SecondaryText) } },
   containerColor = Color(0xFF080C16)
@@ -670,32 +807,31 @@ private fun PlayerScreen(
    enabled = playback.hasMedia
   )
 
-  Column(Modifier.padding(top = 34.dp)) {
+  Column(Modifier.padding(top = 22.dp)) {
    Text(
     playback.title ?: "NO TRACK",
     color = Color.White,
-    fontSize = 25.sp,
-    fontWeight = FontWeight.Medium,
+    fontSize = 20.sp,
+    fontWeight = FontWeight.Normal,
     maxLines = 2,
     overflow = TextOverflow.Ellipsis
    )
    Text(
     playback.artist ?: "Unknown Artist",
     color = SecondaryText,
-    fontSize = 14.sp,
-    modifier = Modifier.padding(top = 8.dp),
+    fontSize = 12.sp,
+    modifier = Modifier.padding(top = 6.dp),
     maxLines = 1,
     overflow = TextOverflow.Ellipsis
    )
   }
 
-  Column(Modifier.padding(top = 28.dp)) {
-   Slider(
-    value = playback.positionMs.coerceIn(0L, playback.durationMs.coerceAtLeast(1L)).toFloat(),
-    onValueChange = { player?.seekTo(it.toLong()) },
-    valueRange = 0f..playback.durationMs.coerceAtLeast(1L).toFloat(),
+  Column(Modifier.padding(top = 18.dp)) {
+   ThinPlaybackProgress(
+    positionMs = playback.positionMs,
+    durationMs = playback.durationMs,
     enabled = player != null && playback.durationMs > 0L,
-    modifier = Modifier.fillMaxWidth()
+    onSeek = { player?.seekTo(it) }
    )
    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
     Text(formatTime(playback.positionMs), color = SecondaryText, fontSize = 11.sp)
@@ -704,7 +840,7 @@ private fun PlayerScreen(
   }
 
   Row(
-   Modifier.fillMaxWidth().padding(top = 28.dp),
+   Modifier.fillMaxWidth().padding(top = 18.dp),
    horizontalArrangement = Arrangement.SpaceEvenly,
    verticalAlignment = Alignment.CenterVertically
   ) {
@@ -713,19 +849,19 @@ private fun PlayerScreen(
      Icons.Default.SkipPrevious,
      contentDescription = "Previous track",
      tint = controlColor(playback.hasPrevious),
-     modifier = Modifier.size(31.dp)
+     modifier = Modifier.size(25.dp)
     )
    }
    IconButton(
     onClick = { togglePlayback(player) },
     enabled = player != null && playback.hasMedia,
-    modifier = Modifier.size(68.dp)
+    modifier = Modifier.size(58.dp)
    ) {
     Icon(
      if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
      contentDescription = if (playback.isPlaying) "Pause" else "Play",
      tint = controlColor(player != null && playback.hasMedia),
-     modifier = Modifier.size(50.dp)
+     modifier = Modifier.size(42.dp)
     )
    }
    IconButton(onClick = { player?.seekToNextMediaItem() }, enabled = playback.hasNext) {
@@ -733,13 +869,13 @@ private fun PlayerScreen(
      Icons.Default.SkipNext,
      contentDescription = "Next track",
      tint = controlColor(playback.hasNext),
-     modifier = Modifier.size(31.dp)
+     modifier = Modifier.size(25.dp)
     )
    }
   }
 
   Row(
-   Modifier.fillMaxWidth().padding(top = 24.dp),
+   Modifier.fillMaxWidth().padding(top = 12.dp),
    horizontalArrangement = Arrangement.SpaceBetween
   ) {
    IconButton(
@@ -768,13 +904,12 @@ private fun PlayerScreen(
   }
 
   Row(
-   Modifier.fillMaxWidth().padding(top = 18.dp),
+   Modifier.fillMaxWidth().padding(top = 10.dp),
    horizontalArrangement = Arrangement.SpaceEvenly,
    verticalAlignment = Alignment.CenterVertically
   ) {
-   PlayerShortcut("LYRICS", active = false, onClick = onOpenLyrics)
-   PlayerShortcut("EQ", active = eqEnabled, onClick = onOpenEq)
-   PlayerShortcut("LIVE MIX", active = liveStageEnabled, onClick = onOpenLiveStage)
+   PlayerShortcut("EQ", Icons.Default.GraphicEq, active = eqEnabled, onClick = onOpenEq)
+   PlayerShortcut("LIVE MIX", Icons.Default.SurroundSound, active = liveStageEnabled, onClick = onOpenLiveStage)
   }
  }
  if (showQueue && player != null) {
@@ -783,13 +918,54 @@ private fun PlayerScreen(
 }
 
 @Composable
-private fun PlayerShortcut(label: String, active: Boolean, onClick: () -> Unit) {
+private fun PlayerShortcut(label: String, icon: ImageVector, active: Boolean, onClick: () -> Unit) {
  Column(
   Modifier.clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 8.dp),
-  horizontalAlignment = Alignment.CenterHorizontally
+ horizontalAlignment = Alignment.CenterHorizontally
  ) {
+  Icon(icon, contentDescription = label, tint = if (active) Ultramarine else SecondaryText, modifier = Modifier.size(20.dp))
   Text(label, color = if (active) Color(0xFF8A91A3) else Color(0xFF626979), fontSize = 9.sp)
   if (active) Box(Modifier.padding(top = 5.dp).size(4.dp).background(Ultramarine, CircleShape))
+ }
+}
+
+@Composable
+private fun ThinPlaybackProgress(
+ positionMs: Long,
+ durationMs: Long,
+ enabled: Boolean,
+ onSeek: (Long) -> Unit
+) {
+ val safeDuration = durationMs.coerceAtLeast(1L)
+ val fraction = (positionMs.toFloat() / safeDuration).coerceIn(0f, 1f)
+ Canvas(
+  Modifier
+   .fillMaxWidth()
+   .height(26.dp)
+   .pointerInput(enabled, safeDuration) {
+    if (!enabled) return@pointerInput
+    detectTapGestures { offset -> onSeek((offset.x / size.width * safeDuration).toLong().coerceIn(0L, safeDuration)) }
+   }
+   .pointerInput(enabled, safeDuration) {
+    if (!enabled) return@pointerInput
+    detectHorizontalDragGestures { change, _ ->
+     change.consume()
+     onSeek((change.position.x / size.width * safeDuration).toLong().coerceIn(0L, safeDuration))
+    }
+   }
+ ) {
+  val y = size.height / 2f
+  val playedX = size.width * fraction
+  drawLine(Color(0xFF252B39), Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
+  if (playedX > 0f) {
+   drawLine(
+    brush = Brush.horizontalGradient(listOf(Ultramarine.copy(alpha = 0.12f), Ultramarine)),
+    start = Offset(0f, y),
+    end = Offset(playedX, y),
+    strokeWidth = 1.2.dp.toPx()
+   )
+  }
+  drawCircle(if (enabled) Color(0xFF69A1FF) else Color(0xFF343A48), 3.dp.toPx(), Offset(playedX, y))
  }
 }
 
@@ -852,7 +1028,7 @@ private fun AlbumArtwork(
   value = withContext(Dispatchers.IO) { loadEmbeddedArtwork(context, mediaUri) }
  }
  Box(
-  Modifier.fillMaxWidth().aspectRatio(1f).background(Color(0xFF07133F)).clickable(enabled = enabled, onClick = onClick),
+  Modifier.fillMaxWidth().aspectRatio(1.18f).background(Color(0xFF050A17)).clickable(enabled = enabled, onClick = onClick),
   contentAlignment = Alignment.Center
  ) {
   if (artwork != null) {
@@ -864,14 +1040,16 @@ private fun AlbumArtwork(
    )
   } else {
    Box(
-    Modifier.fillMaxSize().padding(1.dp).background(Color(0xFF091A59)),
+    Modifier.fillMaxSize().padding(1.dp).background(
+     Brush.radialGradient(listOf(Color(0xFF10265F), Color(0xFF050A17), AppBackground))
+    ),
     contentAlignment = Alignment.Center
    ) {
     Icon(
      Icons.Default.GraphicEq,
      contentDescription = "Album art placeholder",
      tint = Ultramarine,
-     modifier = Modifier.size(84.dp)
+     modifier = Modifier.size(54.dp)
     )
    }
   }

@@ -37,6 +37,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -146,7 +148,7 @@ fun LiveStageScreen(
    )
   }
 
-  StageVisual()
+  StageVisual(settings)
 
   Row(
    Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 2.dp),
@@ -203,10 +205,23 @@ fun LiveStageScreen(
      }
     },
     modifier = Modifier.weight(1f)
-   ) { Text(if (stageProgress == null) "ANALYZE TRACK" else "ANALYZING…", color = StageUltra, fontSize = 9.sp) }
+   ) { Text(if (stageProgress == null) "AUTO TUNE STAGE" else "TUNING STAGE…", color = StageUltra, fontSize = 9.sp) }
    stageStatus?.let { Text(it, color = StageMuted, fontSize = 8.sp) }
   }
-  stageProgress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)) }
+  Text(
+   "FAST ANALYSIS · WIDTH / DISTANCE / IMPACT / AIR",
+   color = StageMuted,
+   fontSize = 7.sp,
+   modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 3.dp)
+  )
+  stageProgress?.let {
+   LinearProgressIndicator(
+    progress = { it },
+    color = StageUltra,
+    trackColor = StageHairline,
+    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).height(1.dp)
+   )
+  }
 
   HorizontalDivider(
    color = StageHairline,
@@ -220,7 +235,12 @@ fun LiveStageScreen(
     horizontalAlignment = Alignment.CenterHorizontally
    ) {
     focusProgress?.let {
-     LinearProgressIndicator(progress = { it.fraction }, modifier = Modifier.fillMaxWidth())
+     LinearProgressIndicator(
+      progress = { it.fraction },
+      color = StageUltra,
+      trackColor = StageHairline,
+      modifier = Modifier.fillMaxWidth().height(1.dp)
+     )
      Text(it.message, color = StageMuted, fontSize = 8.sp, modifier = Modifier.padding(top = 5.dp))
     }
     TextButton(
@@ -238,7 +258,10 @@ fun LiveStageScreen(
        focusProgress = null
       }
      }
-    ) { Text(if (focusProgress == null) "BUILD 4-PART MIX" else "ANALYZING…", color = StageUltra, fontSize = 9.sp) }
+    ) { Text(if (focusProgress == null) "BUILD 4-PART MIX" else "SEPARATING AUDIO…", color = StageUltra, fontSize = 9.sp) }
+    if (focusProgress == null) {
+     Text("VOCAL · DRUMS · BASS · GUITAR · ONE-TIME ANALYSIS", color = StageMuted, fontSize = 7.sp)
+    }
     focusError?.let { Text(it, color = StageMute, fontSize = 8.sp) }
    }
   } else {
@@ -301,25 +324,91 @@ private fun FocusChannel(
 }
 
 @Composable
-private fun StageVisual() {
- Box(Modifier.fillMaxWidth().height(118.dp).padding(horizontal = 22.dp)) {
+private fun StageVisual(settings: LiveStageSettings) {
+ Box(Modifier.fillMaxWidth().height(168.dp).padding(horizontal = 22.dp, vertical = 2.dp)) {
   Canvas(Modifier.fillMaxSize()) {
-   repeat(3) { index ->
-    val inset = index * 18f
-    drawArc(
-     color = StageUltra.copy(alpha = 0.55f - index * 0.12f),
-     startAngle = 190f,
-     sweepAngle = 160f,
-     useCenter = false,
-     topLeft = Offset(inset, 8f + index * 13f),
-     size = Size(size.width - inset * 2f, 80f - index * 8f),
-     style = Stroke(0.8.dp.toPx(), cap = StrokeCap.Round)
-    )
+   val venueScale = when (settings.venue) {
+    StageVenue.CLUB -> 0.72f
+    StageVenue.HALL -> 0.82f
+    StageVenue.ARENA -> 0.92f
+    StageVenue.STADIUM -> 1f
    }
-   repeat(24) { index ->
-    val x = size.width * (0.05f + (index % 12) / 13f)
-    val y = size.height * (0.68f + (index / 12) * 0.16f)
-    drawCircle(StageUltra.copy(alpha = 0.25f + (index % 4) * 0.12f), 1.2.dp.toPx(), Offset(x, y))
+   val widthFraction = ((settings.stageWidth - 0.7f) / 1.1f).coerceIn(0f, 1f)
+   val stageWidth = size.width * (0.46f + widthFraction * 0.48f) * venueScale
+   val stageLeft = (size.width - stageWidth) / 2f
+   val stageRight = stageLeft + stageWidth
+   val roofY = size.height * (0.18f - settings.air * 0.025f)
+   val floorY = size.height * 0.58f
+
+   drawRect(
+    brush = Brush.radialGradient(
+     listOf(StageUltra.copy(alpha = 0.11f + settings.air * 0.09f), Color.Transparent),
+     center = Offset(size.width / 2f, floorY * 0.75f),
+     radius = stageWidth * 0.62f
+    )
+   )
+   drawLine(StageUltra.copy(alpha = 0.65f), Offset(stageLeft, roofY), Offset(stageRight, roofY), 0.8.dp.toPx())
+   drawLine(StageUltra.copy(alpha = 0.28f), Offset(stageLeft, roofY), Offset(stageLeft * 0.86f, floorY), 0.65.dp.toPx())
+   drawLine(StageUltra.copy(alpha = 0.28f), Offset(stageRight, roofY), Offset(size.width - stageLeft * 0.86f, floorY), 0.65.dp.toPx())
+   drawLine(StageUltra.copy(alpha = 0.38f), Offset(stageLeft * 0.86f, floorY), Offset(size.width - stageLeft * 0.86f, floorY), 0.7.dp.toPx())
+
+   val speakerWidth = 8.dp.toPx()
+   val speakerHeight = 25.dp.toPx()
+   listOf(stageLeft + speakerWidth, stageRight - speakerWidth * 2f).forEach { speakerX ->
+    drawRoundRect(
+     color = Color(0xFF111827),
+     topLeft = Offset(speakerX, floorY - speakerHeight),
+     size = Size(speakerWidth, speakerHeight),
+     cornerRadius = CornerRadius(2.dp.toPx())
+    )
+    drawCircle(StageUltra.copy(alpha = 0.45f + settings.impact * 0.45f), 2.2.dp.toPx(), Offset(speakerX + speakerWidth / 2f, floorY - speakerHeight * 0.62f))
+    val waveCount = 1 + (settings.impact * 3f).roundToInt()
+    repeat(waveCount) { wave ->
+     val radius = (8f + wave * 7f) * density
+     drawArc(
+      color = StageUltra.copy(alpha = (0.55f - wave * 0.1f) * settings.impact.coerceAtLeast(0.2f)),
+      startAngle = if (speakerX < size.width / 2f) 285f else 105f,
+      sweepAngle = 150f,
+      useCenter = false,
+      topLeft = Offset(speakerX + speakerWidth / 2f - radius, floorY - speakerHeight * 0.62f - radius),
+      size = Size(radius * 2f, radius * 2f),
+      style = Stroke(0.7.dp.toPx())
+     )
+    }
+   }
+
+   val crowdCount = when (settings.venue) {
+    StageVenue.CLUB -> 10
+    StageVenue.HALL -> 16
+    StageVenue.ARENA -> 24
+    StageVenue.STADIUM -> 32
+   }
+   repeat(crowdCount) { index ->
+    val row = index / 8
+    val column = index % 8
+    val x = size.width * (0.12f + column / 9.2f) + (row % 2) * 5.dp.toPx()
+    val y = size.height * (0.69f + row * 0.055f)
+    drawCircle(StageUltra.copy(alpha = 0.18f + (index % 3) * 0.08f), 1.1.dp.toPx(), Offset(x, y))
+   }
+
+   val listenerY = size.height * (0.64f + settings.distance * 0.22f)
+   val listenerScale = 0.65f + settings.distance * 0.65f
+   val headRadius = 3.2.dp.toPx() * listenerScale
+   val listener = Offset(size.width / 2f, listenerY)
+   drawCircle(Color(0xFF9CA8C4), headRadius, listener)
+   drawLine(
+    Color(0xFF77829C),
+    Offset(listener.x, listener.y + headRadius),
+    Offset(listener.x, listener.y + headRadius + 12.dp.toPx() * listenerScale),
+    1.2.dp.toPx() * listenerScale,
+    cap = StrokeCap.Round
+   )
+
+   val particleCount = (settings.air * 18f).roundToInt()
+   repeat(particleCount) { index ->
+    val x = stageLeft + stageWidth * ((index * 37 % 97) / 97f)
+    val y = roofY + (floorY - roofY) * ((index * 53 % 89) / 89f)
+    drawCircle(Color(0xFF69A1FF).copy(alpha = 0.18f + settings.air * 0.35f), 0.8.dp.toPx(), Offset(x, y))
    }
   }
  }

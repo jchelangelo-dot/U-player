@@ -1,11 +1,14 @@
 package com.uplayer.app.dsp
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,6 +45,7 @@ fun RotaryKnob(
  val currentValue = rememberUpdatedState(value)
  val currentValueChange = rememberUpdatedState(onValueChange)
  val fraction = ((value - valueRange.start) / (valueRange.endInclusive - valueRange.start)).coerceIn(0f, 1f)
+ val animatedFraction by animateFloatAsState(fraction, animationSpec = tween(70), label = "rotary-position")
  Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
   Box(Modifier.size(size), contentAlignment = Alignment.Center) {
    Canvas(
@@ -51,7 +55,7 @@ fun RotaryKnob(
       detectDragGestures { change, dragAmount ->
        change.consume()
        val span = valueRange.endInclusive - valueRange.start
-       val delta = (dragAmount.x - dragAmount.y) / 220f * span
+       val delta = dragAmount.x / 280f * span
        currentValueChange.value((currentValue.value + delta).coerceIn(valueRange))
       }
      }
@@ -59,6 +63,12 @@ fun RotaryKnob(
     val stroke = 1.35.dp.toPx()
     val inset = 4.dp.toPx()
     val arcSize = Size(this.size.width - inset * 2f, this.size.height - inset * 2f)
+    val center = Offset(this.size.width / 2f, this.size.height / 2f)
+    drawCircle(
+     brush = Brush.radialGradient(listOf(Color(0xFF171C27), Color(0xFF090C13))),
+     radius = arcSize.width * 0.42f,
+     center = center
+    )
     drawArc(
      color = KnobTrack,
      startAngle = 135f,
@@ -68,7 +78,7 @@ fun RotaryKnob(
      size = arcSize,
      style = Stroke(stroke, cap = StrokeCap.Round)
     )
-    val sweep = 270f * fraction
+    val sweep = 270f * animatedFraction
     if (sweep > 0.5f) {
      drawArc(
       brush = Brush.sweepGradient(
@@ -84,7 +94,6 @@ fun RotaryKnob(
     }
     val angle = (135f + sweep) * PI.toFloat() / 180f
     val radius = arcSize.width / 2f
-    val center = Offset(this.size.width / 2f, this.size.height / 2f)
     val handle = Offset(center.x + cos(angle) * radius, center.y + sin(angle) * radius)
     drawCircle(Color(0xFF69A1FF), radius = 2.2.dp.toPx(), center = handle)
    }

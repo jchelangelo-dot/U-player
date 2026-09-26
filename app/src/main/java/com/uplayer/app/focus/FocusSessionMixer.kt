@@ -28,45 +28,61 @@ data class FocusMixSettings(
 }
 
 object FocusSessionMixer {
+ fun cachedMix(directory: File, settings: FocusMixSettings): File? =
+  mixFile(directory, settings).takeIf { cached ->
+   val expectedLength = FocusStem.entries.minOfOrNull { File(directory, it.fileName).length() } ?: 0L
+   expectedLength > WAV_HEADER_BYTES && cached.isFile && cached.length() == expectedLength
+  }
+
  suspend fun render(directory: File, settings: FocusMixSettings): File {
-  val sources = FocusStem.entries.associateWith { RandomAccessFile(File(directory, it.fileName), "r") }
+  cachedMix(directory, settings)?.let {
+   it.setLastModified(System.currentTimeMillis())
+   return it
+  }
+
+  val stemFiles = FocusStem.entries.associateWith { File(directory, it.fileName) }
+  val anySolo = listOf(settings.vocal, settings.drums, settings.bass, settings.guitar)
+   .any(FocusChannelSettings::solo)
+  val activeStems = FocusStem.entries.filter { stem ->
+   val channel = settings.channel(stem)
+   when {
+    stem == FocusStem.RESIDUAL -> !anySolo
+    anySolo -> channel.solo
+    else -> !channel.muted
+   }
+  }
+  val sources = activeStems.map { stem ->
+   MixSource(
+    file = RandomAccessFile(stemFiles.getValue(stem), "r"),
+    gain = if (stem == FocusStem.RESIDUAL) 1f else 10f.pow(settings.channel(stem).gainDb / 20f),
+    buffer = ByteArray(FRAMES_PER_BLOCK * BYTES_PER_FRAME)
+   )
+  }
   val version = System.nanoTime()
   val temporaryFile = File(directory, "session_mix_$version.tmp")
-  val outputFile = File(directory, "session_mix_$version.wav")
+  val outputFile = mixFile(directory, settings)
   val output = RandomAccessFile(temporaryFile, "rw").apply { setLength(0); write(ByteArray(44)) }
-  val anySolo = listOf(settings.vocal, settings.drums, settings.bass, settings.guitar).any(FocusChannelSettings::solo)
-  val totalFrames = ((sources.values.minOf { it.length() } - 44L) / 4L).coerceAtLeast(0L)
-  sources.values.forEach { it.seek(44L) }
-  val framesPerBlock = 16_384
-  val sourceBuffers = FocusStem.entries.associateWith { ByteArray(framesPerBlock * 4) }
+  val totalFrames = ((stemFiles.values.minOf { it.length() } - WAV_HEADER_BYTES) / BYTES_PER_FRAME)
+   .coerceAtLeast(0L)
+  sources.forEach { it.file.seek(WAV_HEADER_BYTES) }
   var framesWritten = 0L
   var completed = false
   try {
    while (framesWritten < totalFrames) {
     currentCoroutineContext().ensureActive()
-    val frameCount = minOf(framesPerBlock.toLong(), totalFrames - framesWritten).toInt()
-    FocusStem.entries.forEach { stem -> sources.getValue(stem).readFully(sourceBuffers.getValue(stem), 0, frameCount * 4) }
-    val mixed = ByteArray(frameCount * 4)
+    val frameCount = minOf(FRAMES_PER_BLOCK.toLong(), totalFrames - framesWritten).toInt()
+    sources.forEach { it.file.readFully(it.buffer, 0, frameCount * BYTES_PER_FRAME) }
+    val mixed = ByteArray(frameCount * BYTES_PER_FRAME)
     repeat(frameCount) { frame ->
      var left = 0f
      var right = 0f
-     FocusStem.entries.forEach { stem ->
-      val channel = settings.channel(stem)
-      val audible = when {
-       stem == FocusStem.RESIDUAL -> !anySolo
-       anySolo -> channel.solo
-       else -> !channel.muted
-      }
-      if (audible) {
-       val gain = 10f.pow(channel.gainDb / 20f)
-       val bytes = sourceBuffers.getValue(stem)
-       val offset = frame * 4
-       left += shortAt(bytes, offset) / 32768f * gain
-       right += shortAt(bytes, offset + 2) / 32768f * gain
-      }
+     val offset = frame * BYTES_PER_FRAME
+     sources.forEach { source ->
+      left += shortAt(source.buffer, offset) * source.gain
+      right += shortAt(source.buffer, offset + 2) * source.gain
      }
-     putShort(mixed, frame * 4, (left.coerceIn(-1f, 1f) * 32767f).toInt())
-     putShort(mixed, frame * 4 + 2, (right.coerceIn(-1f, 1f) * 32767f).toInt())
+     putShort(mixed, offset, left.coerceIn(Short.MIN_VALUE.toFloat(), Short.MAX_VALUE.toFloat()).toInt())
+     putShort(mixed, offset + 2, right.coerceIn(Short.MIN_VALUE.toFloat(), Short.MAX_VALUE.toFloat()).toInt())
     }
     output.write(mixed)
     framesWritten += frameCount
@@ -75,7 +91,7 @@ object FocusSessionMixer {
    output.write(wavHeader(framesWritten * 4L))
    completed = true
   } finally {
-   sources.values.forEach { it.close() }
+   sources.forEach { it.file.close() }
    output.close()
    if (!completed) temporaryFile.delete()
   }
@@ -86,6 +102,15 @@ object FocusSessionMixer {
   cleanupOldMixes(directory, outputFile)
   return outputFile
  }
+
+ private data class MixSource(
+  val file: RandomAccessFile,
+  val gain: Float,
+  val buffer: ByteArray
+ )
+
+ private fun mixFile(directory: File, settings: FocusMixSettings) =
+  File(directory, "session_mix_${Integer.toUnsignedString(settings.hashCode(), 36)}.wav")
 
  private fun cleanupOldMixes(directory: File, current: File) {
   directory.listFiles()?.filter { file ->
@@ -111,4 +136,8 @@ object FocusSessionMixer {
   int(28, 176_400, 4); int(32, 4, 2); int(34, 16, 2); text(36, "data"); int(40, dataSize, 4)
   return header
  }
+
+ private const val WAV_HEADER_BYTES = 44L
+ private const val BYTES_PER_FRAME = 4
+ private const val FRAMES_PER_BLOCK = 65_536
 }

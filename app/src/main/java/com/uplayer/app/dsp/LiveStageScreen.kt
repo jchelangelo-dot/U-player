@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.sp
 import com.uplayer.app.focus.FocusAnalysisProgress
 import com.uplayer.app.focus.FocusChannelSettings
 import com.uplayer.app.focus.FocusMixSettings
+import com.uplayer.app.focus.FocusMixSettingsStore
 import com.uplayer.app.focus.FocusSessionAnalyzer
 import com.uplayer.app.focus.FocusSessionMixer
 import java.io.File
@@ -82,19 +83,27 @@ fun LiveStageScreen(
  val context = LocalContext.current
  val stageAnalyzer = remember(context) { LiveStageAutoAnalyzer(context.applicationContext) }
  val focusAnalyzer = remember(context) { FocusSessionAnalyzer(context.applicationContext) }
+ val focusSettingsStore = remember(context) { FocusMixSettingsStore(context.applicationContext) }
  val scope = rememberCoroutineScope()
  var stageProgress by remember(mediaUri) { mutableStateOf<Float?>(null) }
  var stageStatus by remember(mediaUri) { mutableStateOf<String?>(null) }
  var focusReady by remember(trackId) { mutableStateOf(trackId.isNotBlank() && focusAnalyzer.isReady(trackId)) }
  var focusProgress by remember(trackId) { mutableStateOf<FocusAnalysisProgress?>(null) }
  var focusError by remember(trackId) { mutableStateOf<String?>(null) }
- var focusSettings by remember(trackId) { mutableStateOf(FocusMixSettings()) }
+ val initialFocusSettings = remember(trackId) { focusSettingsStore.load(trackId) }
+ var focusSettings by remember(trackId) { mutableStateOf(initialFocusSettings) }
  var rendering by remember(trackId) { mutableStateOf(false) }
  var hasFocusChanges by remember(trackId) { mutableStateOf(false) }
- var latestSessionFile by remember(trackId) { mutableStateOf<File?>(null) }
+ var latestSessionFile by remember(trackId, focusReady) {
+  mutableStateOf(
+   if (focusReady) FocusSessionMixer.cachedMix(focusAnalyzer.sessionDirectory(trackId), initialFocusSettings)
+   else null
+  )
+ }
 
  fun updateFocus(value: FocusMixSettings) {
   focusSettings = value
+  focusSettingsStore.save(trackId, value)
   hasFocusChanges = true
  }
  fun leave() {

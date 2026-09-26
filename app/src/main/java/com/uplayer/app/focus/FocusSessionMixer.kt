@@ -2,6 +2,8 @@ package com.uplayer.app.focus
 
 import java.io.File
 import java.io.RandomAccessFile
+import kotlin.math.abs
+import kotlin.math.exp
 import kotlin.math.pow
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -67,6 +69,8 @@ object FocusSessionMixer {
   sources.forEach { it.file.seek(WAV_HEADER_BYTES) }
   var framesWritten = 0L
   var completed = false
+  var limiterGain = 1f
+  val release = exp(-1.0 / (44_100.0 * 0.22)).toFloat()
   try {
    while (framesWritten < totalFrames) {
     currentCoroutineContext().ensureActive()
@@ -81,8 +85,11 @@ object FocusSessionMixer {
       left += shortAt(source.buffer, offset) * source.gain
       right += shortAt(source.buffer, offset + 2) * source.gain
      }
-     putShort(mixed, offset, left.coerceIn(Short.MIN_VALUE.toFloat(), Short.MAX_VALUE.toFloat()).toInt())
-     putShort(mixed, offset + 2, right.coerceIn(Short.MIN_VALUE.toFloat(), Short.MAX_VALUE.toFloat()).toInt())
+     val peak = maxOf(abs(left), abs(right))
+     val targetGain = if (peak > MIX_CEILING) MIX_CEILING / peak else 1f
+     limiterGain = if (targetGain < limiterGain) targetGain else targetGain + release * (limiterGain - targetGain)
+     putShort(mixed, offset, (left * limiterGain).coerceIn(-MIX_CEILING, MIX_CEILING).toInt())
+     putShort(mixed, offset + 2, (right * limiterGain).coerceIn(-MIX_CEILING, MIX_CEILING).toInt())
     }
     output.write(mixed)
     framesWritten += frameCount
@@ -110,7 +117,7 @@ object FocusSessionMixer {
  )
 
  private fun mixFile(directory: File, settings: FocusMixSettings) =
-  File(directory, "session_mix_${Integer.toUnsignedString(settings.hashCode(), 36)}.wav")
+  File(directory, "session_mix_v2_${Integer.toUnsignedString(settings.hashCode(), 36)}.wav")
 
  private fun cleanupOldMixes(directory: File, current: File) {
   directory.listFiles()?.filter { file ->
@@ -140,4 +147,5 @@ object FocusSessionMixer {
  private const val WAV_HEADER_BYTES = 44L
  private const val BYTES_PER_FRAME = 4
  private const val FRAMES_PER_BLOCK = 65_536
+ private const val MIX_CEILING = 31_128f
 }

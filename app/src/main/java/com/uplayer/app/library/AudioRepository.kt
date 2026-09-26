@@ -9,6 +9,7 @@ import android.provider.DocumentsContract
 import android.provider.MediaStore
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import java.util.Locale
 
 data class Track(
  val id: Long,
@@ -26,7 +27,7 @@ data class Track(
 class AudioRepository(private val context: Context) {
  fun loadTracks(extraFolders: List<Uri> = emptyList()): List<Track> =
   (loadMediaStoreTracks() + extraFolders.flatMap(::loadDocumentTreeTracks))
-   .distinctBy { it.uri.toString() }
+   .distinctBy(Track::duplicateKey)
    .sortedBy { it.title.lowercase() }
 
  private fun loadMediaStoreTracks(): List<Track> {
@@ -163,3 +164,10 @@ class AudioRepository(private val context: Context) {
   val AUDIO_EXTENSIONS = listOf(".mp3", ".m4a", ".aac", ".flac", ".ogg", ".wav", ".opus")
  }
 }
+
+private fun Track.duplicateKey(): String = listOf(
+ title.trim().lowercase(Locale.ROOT),
+ artist.trim().lowercase(Locale.ROOT),
+ album.trim().lowercase(Locale.ROOT),
+ (durationMs / 1_000L).toString()
+).joinToString("\u0000")

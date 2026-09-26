@@ -16,7 +16,7 @@ class FocusCacheManager(private val context: Context) {
  private val modelRoot get() = File(context.noBackupFilesDir, "focus_models")
 
  fun snapshot(trackId: String): FocusCacheInfo {
-  val currentDirectory = trackId.takeIf(String::isNotBlank)?.let { File(sessionsRoot, it) }
+  val currentDirectory = safeSessionDirectory(trackId)
   val sessionDirectories = sessionsRoot.listFiles()?.filter(File::isDirectory).orEmpty()
   return FocusCacheInfo(
    currentStemBytes = currentDirectory?.filesMatching { it.name in STEM_FILE_NAMES }?.sumOf(File::length) ?: 0L,
@@ -30,15 +30,34 @@ class FocusCacheManager(private val context: Context) {
  }
 
  fun clearRenderedMixes(trackId: String) {
-  if (trackId.isBlank()) return
-  File(sessionsRoot, trackId).filesMatching(::isRenderedMix).forEach(File::delete)
+  safeSessionDirectory(trackId)?.filesMatching(::isRenderedMix)?.forEach(File::delete)
  }
 
  fun clearTrackAnalysis(trackId: String) {
-  if (trackId.isBlank()) return
-  val directory = File(sessionsRoot, trackId)
-  if (directory.parentFile?.canonicalFile == sessionsRoot.canonicalFile) directory.deleteRecursively()
+  safeSessionDirectory(trackId)?.deleteRecursively()
  }
+
+ fun clearAllAnalyses() {
+  sessionsRoot.listFiles()?.filter(File::isDirectory)?.forEach(File::deleteRecursively)
+ }
+
+ /** Keeps recent analyses while preventing stems from growing without a storage bound. */
+ fun markUsedAndTrim(trackId: String) {
+  val current = safeSessionDirectory(trackId) ?: return
+  if (current.isDirectory) current.setLastModified(System.currentTimeMillis())
+  val directories = sessionsRoot.listFiles()?.filter(File::isDirectory).orEmpty()
+  val entries = directories.map { SessionCacheEntry(it.name, directorySize(it), it.lastModified()) }
+  val evictions = sessionsToEvict(entries, current.name, MAX_SESSION_COUNT, MAX_SESSION_BYTES)
+  directories.filter { it.name in evictions }.forEach { candidate ->
+   candidate.deleteRecursively()
+  }
+ }
+
+ private fun safeSessionDirectory(trackId: String): File? = runCatching {
+  if (trackId.isBlank()) return null
+  val root = sessionsRoot.canonicalFile
+  File(root, trackId).canonicalFile.takeIf { it.parentFile == root }
+ }.getOrNull()
 
  private fun File.filesMatching(predicate: (File) -> Boolean): List<File> =
   listFiles()?.filter { it.isFile && predicate(it) }.orEmpty()
@@ -51,6 +70,29 @@ class FocusCacheManager(private val context: Context) {
 
  private companion object {
   const val WAV_HEADER_BYTES = 44L
+  const val MAX_SESSION_COUNT = 8
+  const val MAX_SESSION_BYTES = 1_500L * 1_024L * 1_024L
   val STEM_FILE_NAMES = FocusStem.entries.map(FocusStem::fileName).toSet()
+ }
+}
+
+internal data class SessionCacheEntry(val id: String, val bytes: Long, val lastUsed: Long)
+
+internal fun sessionsToEvict(
+ entries: List<SessionCacheEntry>,
+ currentId: String,
+ maxCount: Int,
+ maxBytes: Long
+): Set<String> {
+ var remainingBytes = entries.sumOf(SessionCacheEntry::bytes)
+ var remainingCount = entries.size
+ return buildSet {
+  entries.sortedBy(SessionCacheEntry::lastUsed).forEach { entry ->
+   if (entry.id != currentId && (remainingCount > maxCount || remainingBytes > maxBytes)) {
+    add(entry.id)
+    remainingBytes -= entry.bytes
+    remainingCount--
+   }
+  }
  }
 }

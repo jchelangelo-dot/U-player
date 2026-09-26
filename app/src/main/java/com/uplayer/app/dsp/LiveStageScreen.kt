@@ -106,6 +106,7 @@ fun LiveStageScreen(
  var cacheInfo by remember(trackId, focusReady) { mutableStateOf(focusCacheManager.snapshot(trackId)) }
  var showCacheManager by remember { mutableStateOf(false) }
  var confirmClearAnalysis by remember { mutableStateOf(false) }
+ var confirmClearAllAnalyses by remember { mutableStateOf(false) }
 
  fun updateFocus(value: FocusMixSettings) {
   focusSettings = value
@@ -125,7 +126,9 @@ fun LiveStageScreen(
   focusError = null
   try {
    val file = withContext(Dispatchers.IO) {
-    FocusSessionMixer.render(focusAnalyzer.sessionDirectory(trackId), focusSettings)
+    FocusSessionMixer.render(focusAnalyzer.sessionDirectory(trackId), focusSettings).also {
+     focusCacheManager.markUsedAndTrim(trackId)
+    }
    }
    latestSessionFile = file
    cacheInfo = focusCacheManager.snapshot(trackId)
@@ -270,7 +273,11 @@ fun LiveStageScreen(
         withContext(Dispatchers.IO) {
          focusAnalyzer.analyze(trackId, uri) { value -> scope.launch { focusProgress = value } }
         }
-       }.onSuccess { focusReady = true }.onFailure { focusError = it.message ?: "분석 실패" }
+       }.onSuccess {
+        focusCacheManager.markUsedAndTrim(trackId)
+        focusReady = true
+        cacheInfo = focusCacheManager.snapshot(trackId)
+       }.onFailure { focusError = it.message ?: "분석 실패" }
        focusProgress = null
       }
      }
@@ -341,6 +348,11 @@ fun LiveStageScreen(
       onClick = { confirmClearAnalysis = true },
       modifier = Modifier.fillMaxWidth()
      ) { Text("DELETE CURRENT ANALYSIS", color = StageMute, fontSize = 9.sp) }
+     TextButton(
+      enabled = cacheInfo.allSessionBytes > 0L,
+      onClick = { confirmClearAllAnalyses = true },
+      modifier = Modifier.fillMaxWidth()
+     ) { Text("DELETE ALL ANALYSES", color = StageMute, fontSize = 9.sp) }
     }
    },
    confirmButton = { TextButton(onClick = { showCacheManager = false }) { Text("DONE", color = StageUltra) } },
@@ -366,6 +378,28 @@ fun LiveStageScreen(
     }) { Text("DELETE", color = StageMute) }
    },
    dismissButton = { TextButton(onClick = { confirmClearAnalysis = false }) { Text("CANCEL", color = StageLabel) } },
+   containerColor = Color(0xFF080C16)
+  )
+ }
+
+ if (confirmClearAllAnalyses) {
+  AlertDialog(
+   onDismissRequest = { confirmClearAllAnalyses = false },
+   title = { Text("모든 분석 데이터 삭제", color = Color.White) },
+   text = { Text("모든 곡의 분리된 stem과 믹스를 삭제할까요? 모델 파일과 곡 파일은 유지됩니다.", color = StageLabel) },
+   confirmButton = {
+    TextButton(onClick = {
+     if (sessionActive) onPlayOriginal()
+     focusCacheManager.clearAllAnalyses()
+     focusReady = false
+     latestSessionFile = null
+     hasFocusChanges = false
+     cacheInfo = focusCacheManager.snapshot(trackId)
+     confirmClearAllAnalyses = false
+     showCacheManager = false
+    }) { Text("DELETE ALL", color = StageMute) }
+   },
+   dismissButton = { TextButton(onClick = { confirmClearAllAnalyses = false }) { Text("CANCEL", color = StageLabel) } },
    containerColor = Color(0xFF080C16)
   )
  }

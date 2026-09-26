@@ -48,6 +48,8 @@ import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Favorite
@@ -142,6 +144,7 @@ private enum class LibraryCategory(val label: String) { SONGS("SONGS"), ALBUMS("
 class MainActivity : ComponentActivity() {
  private var controller by mutableStateOf<MediaController?>(null)
  private var tracks by mutableStateOf<List<Track>>(emptyList())
+ private var musicFolders by mutableStateOf<List<Uri>>(emptyList())
  private var controllerFuture: ListenableFuture<MediaController>? = null
  private val folderStore by lazy { UserMusicFolderStore(applicationContext) }
 
@@ -160,9 +163,18 @@ class MainActivity : ComponentActivity() {
 
  override fun onCreate(savedInstanceState: Bundle?) {
   super.onCreate(savedInstanceState)
+  musicFolders = folderStore.load()
   connectController()
   requestAudioAndLoad()
-  setContent { UPlayerApp(tracks, controller, onAddFolder = { folderLauncher.launch(null) }) }
+  setContent {
+   UPlayerApp(
+    tracks = tracks,
+    musicFolders = musicFolders,
+    player = controller,
+    onAddFolder = { folderLauncher.launch(null) },
+    onRemoveFolder = ::removeMusicFolder
+   )
+  }
  }
 
  override fun onResume() {
@@ -191,11 +203,18 @@ class MainActivity : ComponentActivity() {
  }
 
  private fun refreshLibrary() {
+  musicFolders = folderStore.load()
   lifecycleScope.launch {
    tracks = withContext(Dispatchers.IO) {
     AudioRepository(applicationContext).loadTracks(folderStore.load())
    }
   }
+ }
+
+ private fun removeMusicFolder(uri: Uri) {
+  runCatching { contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+  musicFolders = folderStore.remove(uri)
+  refreshLibrary()
  }
 
  override fun onDestroy() {
@@ -207,7 +226,13 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onAddFolder: () -> Unit) {
+private fun UPlayerApp(
+ tracks: List<Track>,
+ musicFolders: List<Uri>,
+ player: MediaController?,
+ onAddFolder: () -> Unit,
+ onRemoveFolder: (Uri) -> Unit
+) {
  var screen by remember { mutableStateOf(AppScreen.LIBRARY) }
  var focusOriginalItem by remember { mutableStateOf<MediaItem?>(null) }
  var focusSessionActive by remember { mutableStateOf(false) }
@@ -338,10 +363,14 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onAddFolde
     )
     AppScreen.LIBRARY -> LibraryScreen(
       tracks = tracks,
+      musicFolders = musicFolders,
       player = player,
       playback = playback,
       onAddFolder = onAddFolder,
+      onRemoveFolder = onRemoveFolder,
       onTrackSelected = { queue, index ->
+       focusOriginalItem = null
+       focusSessionActive = false
        player?.apply {
         setMediaItems(queue.map(Track::asMediaItem), index, 0L)
         prepare()
@@ -360,9 +389,11 @@ private fun UPlayerApp(tracks: List<Track>, player: MediaController?, onAddFolde
 @Composable
 private fun LibraryScreen(
  tracks: List<Track>,
+ musicFolders: List<Uri>,
  player: Player?,
  playback: PlaybackUiState,
  onAddFolder: () -> Unit,
+ onRemoveFolder: (Uri) -> Unit,
  onTrackSelected: (List<Track>, Int) -> Unit,
  onOpenPlayer: () -> Unit
 ) {
@@ -376,22 +407,33 @@ private fun LibraryScreen(
  var selectedGroupId by remember { mutableStateOf<String?>(null) }
  var showCreateGroup by remember { mutableStateOf(false) }
  var groupToEdit by remember { mutableStateOf<MusicGroup?>(null) }
+ var groupToAddTracks by remember { mutableStateOf<MusicGroup?>(null) }
  var groupToDelete by remember { mutableStateOf<MusicGroup?>(null) }
  var selectingSongs by remember { mutableStateOf(false) }
  var selectedTrackIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
  var tracksToAdd by remember { mutableStateOf<Set<Long>>(emptySet()) }
  var showPlaylistPicker by remember { mutableStateOf(false) }
+ var showFolderManager by remember { mutableStateOf(false) }
+ var selectedCollectionName by remember { mutableStateOf<String?>(null) }
  val selectedGroup = groups.firstOrNull { it.id == selectedGroupId }
- val visibleTracks = remember(tracks, query, sort, category, selectedGroup, favorites) {
+ BackHandler(enabled = selectedCollectionName != null) { selectedCollectionName = null }
+ val visibleTracks = remember(tracks, query, sort, category, selectedGroup, selectedCollectionName) {
+  val tracksById = tracks.associateBy(Track::id)
   val groupedTracks = when {
-   selectedGroup != null -> tracks.filter { it.id in selectedGroup.trackIds }
+   selectedGroup != null -> selectedGroup.trackIds.mapNotNull(tracksById::get)
    else -> tracks
   }
   groupedTracks
    .filter { track ->
+    val collectionMatches = when (category) {
+     LibraryCategory.ALBUMS -> selectedCollectionName == null || track.album == selectedCollectionName
+     LibraryCategory.ARTISTS -> selectedCollectionName == null || track.artist == selectedCollectionName
+     LibraryCategory.SONGS -> true
+    }
+    collectionMatches && (
     query.isBlank() || track.title.contains(query, ignoreCase = true) ||
      track.artist.contains(query, ignoreCase = true) || track.album.contains(query, ignoreCase = true) ||
-     track.folder.contains(query, ignoreCase = true)
+     track.folder.contains(query, ignoreCase = true))
    }
    .let { filtered ->
     when (category) {
@@ -404,6 +446,11 @@ private fun LibraryScreen(
      }
     }
    }
+ }
+ val collections = remember(visibleTracks, category, selectedCollectionName) {
+  if (selectedCollectionName != null || category == LibraryCategory.SONGS) emptyList()
+  else visibleTracks.groupBy { if (category == LibraryCategory.ALBUMS) it.album else it.artist }
+   .entries.sortedBy { it.key.lowercase(Locale.getDefault()) }
  }
  Column(Modifier.fillMaxSize().statusBarsPadding()) {
   Row(
@@ -420,8 +467,8 @@ private fun LibraryScreen(
      onClick = { tracksToAdd = selectedTrackIds; showPlaylistPicker = true }
     ) { Text("ADD ${selectedTrackIds.size}", color = if (selectedTrackIds.isEmpty()) SecondaryText else Ultramarine, fontSize = 8.sp) }
    } else {
-    IconButton(onClick = onAddFolder, modifier = Modifier.size(36.dp)) {
-     Icon(Icons.Default.CreateNewFolder, contentDescription = "Add music folder", tint = SecondaryText, modifier = Modifier.size(17.dp))
+    IconButton(onClick = { showFolderManager = true }, modifier = Modifier.size(36.dp)) {
+     Icon(Icons.Default.CreateNewFolder, contentDescription = "Manage music folders", tint = SecondaryText, modifier = Modifier.size(17.dp))
     }
     TextButton(
      onClick = {
@@ -461,38 +508,49 @@ private fun LibraryScreen(
    verticalAlignment = Alignment.CenterVertically
   ) {
    LibraryCategory.entries.forEach { option ->
-    TextButton(onClick = { category = option; selectedGroupId = null; selectingSongs = false; selectedTrackIds = emptySet() }) {
+    TextButton(onClick = { category = option; selectedGroupId = null; selectedCollectionName = null; selectingSongs = false; selectedTrackIds = emptySet() }) {
      Text(option.label, color = if (category == option && selectedGroupId == null) Ultramarine else Color(0xFF626979), fontSize = 9.sp)
     }
    }
    groups.forEach { group ->
-    TextButton(onClick = { selectedGroupId = group.id; category = LibraryCategory.SONGS; selectingSongs = false; selectedTrackIds = emptySet() }) {
+    TextButton(onClick = { selectedGroupId = group.id; selectedCollectionName = null; category = LibraryCategory.SONGS; selectingSongs = false; selectedTrackIds = emptySet() }) {
      Text(group.name.uppercase(), color = if (selectedGroupId == group.id) Ultramarine else Color(0xFF626979), fontSize = 9.sp, maxLines = 1)
     }
    }
    TextButton(onClick = { showCreateGroup = true }) { Text("+", color = Ultramarine, fontSize = 13.sp) }
   }
+  if (selectedCollectionName != null) {
+   Row(
+    Modifier.fillMaxWidth().clickable { selectedCollectionName = null }.padding(horizontal = 20.dp, vertical = 8.dp),
+    verticalAlignment = Alignment.CenterVertically
+   ) {
+    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = SecondaryText, modifier = Modifier.size(17.dp))
+    Column(Modifier.padding(start = 10.dp)) {
+     Text(selectedCollectionName.orEmpty(), color = Color.White, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+     Text("${visibleTracks.size}곡", color = SecondaryText, fontSize = 9.sp)
+    }
+   }
+  }
   LazyColumn(Modifier.weight(1f).padding(top = 4.dp)) {
-   itemsIndexed(visibleTracks, key = { _, track -> track.id }) { index, track ->
-    val section = when (category) {
-     LibraryCategory.ALBUMS -> track.album
-     LibraryCategory.ARTISTS -> track.artist
-     LibraryCategory.SONGS -> null
+   if (collections.isNotEmpty()) {
+    itemsIndexed(collections, key = { _, entry -> entry.key }) { _, entry ->
+     Row(
+      Modifier.fillMaxWidth().clickable { selectedCollectionName = entry.key }.padding(horizontal = 24.dp, vertical = 13.dp),
+      verticalAlignment = Alignment.CenterVertically
+     ) {
+      Column(Modifier.weight(1f)) {
+       Text(entry.key, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+       Text(
+        if (category == LibraryCategory.ALBUMS) "${entry.value.firstOrNull()?.artist.orEmpty()}  ·  ${entry.value.size}곡" else "${entry.value.size}곡",
+        color = SecondaryText,
+        fontSize = 10.sp,
+        maxLines = 1
+       )
+      }
+      Icon(Icons.Default.PlayArrow, contentDescription = "Open", tint = Ultramarine, modifier = Modifier.size(17.dp))
+     }
     }
-    val previousSection = if (index > 0) when (category) {
-     LibraryCategory.ALBUMS -> visibleTracks[index - 1].album
-     LibraryCategory.ARTISTS -> visibleTracks[index - 1].artist
-     LibraryCategory.SONGS -> null
-    } else null
-    if (section != null && section != previousSection) {
-     Text(
-      section.uppercase(),
-      color = Ultramarine,
-      fontSize = 10.sp,
-      letterSpacing = 1.1.sp,
-      modifier = Modifier.padding(start = 24.dp, top = 16.dp, bottom = 4.dp)
-     )
-    }
+   } else itemsIndexed(visibleTracks, key = { _, track -> track.id }) { index, track ->
     Row(
      Modifier
       .fillMaxWidth()
@@ -558,8 +616,8 @@ private fun LibraryScreen(
    }
   }
   if (selectedGroup != null) {
-   TextButton(
-    onClick = { groupToEdit = selectedGroup },
+  TextButton(
+    onClick = { groupToAddTracks = selectedGroup },
     modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp)
    ) {
     Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null, tint = Ultramarine, modifier = Modifier.size(17.dp))
@@ -603,16 +661,31 @@ private fun LibraryScreen(
    }
   )
  }
- groupToEdit?.let { group ->
-  EditGroupTracksDialog(
-   group = group,
-   tracks = tracks,
-   onDismiss = { groupToEdit = null },
-   onSave = { trackIds ->
-    groups = groupRepository.update(group.copy(trackIds = trackIds), groups)
-    groupToEdit = null
-   }
-  )
+ groupToAddTracks?.let { requested ->
+  groups.firstOrNull { it.id == requested.id }?.let { group ->
+   AddGroupTracksDialog(
+    group = group,
+    tracks = tracks,
+    onDismiss = { groupToAddTracks = null },
+    onSave = { trackIds ->
+     groups = groupRepository.addTracks(group.id, trackIds, groups)
+     groupToAddTracks = null
+    }
+   )
+  }
+ }
+ groupToEdit?.let { requested ->
+  groups.firstOrNull { it.id == requested.id }?.let { group ->
+   ManagePlaylistDialog(
+    group = group,
+    tracks = tracks,
+    onDismiss = { groupToEdit = null },
+    onRename = { name -> groups = groupRepository.rename(group.id, name, groups) },
+    onMove = { from, to -> groups = groupRepository.moveTrack(group.id, from, to, groups) },
+    onRemove = { trackId -> groups = groupRepository.removeTrack(group.id, trackId, groups) },
+    onDelete = { groupToEdit = null; groupToDelete = group }
+   )
+  }
  }
  groupToDelete?.let { group ->
   DeleteGroupDialog(
@@ -623,6 +696,14 @@ private fun LibraryScreen(
     if (selectedGroupId == group.id) selectedGroupId = null
     groupToDelete = null
    }
+  )
+ }
+ if (showFolderManager) {
+  MusicFolderDialog(
+   folders = musicFolders,
+   onDismiss = { showFolderManager = false },
+   onAdd = onAddFolder,
+   onRemove = onRemoveFolder
   )
  }
 }
@@ -685,21 +766,23 @@ private fun PlaylistPickerDialog(
 }
 
 @Composable
-private fun EditGroupTracksDialog(
+private fun AddGroupTracksDialog(
  group: MusicGroup,
  tracks: List<Track>,
  onDismiss: () -> Unit,
  onSave: (Set<Long>) -> Unit
 ) {
- var selectedIds by remember(group.id) { mutableStateOf(group.trackIds) }
+ var selectedIds by remember(group.id) { mutableStateOf<Set<Long>>(emptySet()) }
+ val candidates = remember(group.trackIds, tracks) { tracks.filterNot { it.id in group.trackIds } }
  AlertDialog(
   onDismissRequest = onDismiss,
   title = { Text(group.name, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis) },
   text = {
    Column {
     Text("플레이리스트에 넣을 곡을 선택하세요.", color = SecondaryText, fontSize = 11.sp, modifier = Modifier.padding(bottom = 8.dp))
+    if (candidates.isEmpty()) Text("추가할 수 있는 새 곡이 없습니다.", color = SecondaryText, fontSize = 11.sp, modifier = Modifier.padding(vertical = 18.dp))
     LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
-     itemsIndexed(tracks, key = { _, track -> track.id }) { _, track ->
+     itemsIndexed(candidates, key = { _, track -> track.id }) { _, track ->
       Row(
        Modifier.fillMaxWidth().clickable {
         selectedIds = if (track.id in selectedIds) selectedIds - track.id else selectedIds + track.id
@@ -723,6 +806,95 @@ private fun EditGroupTracksDialog(
   },
   confirmButton = { TextButton(onClick = { onSave(selectedIds) }) { Text("저장", color = Ultramarine) } },
   dismissButton = { TextButton(onClick = onDismiss) { Text("취소", color = SecondaryText) } },
+  containerColor = Color(0xFF080C16)
+ )
+}
+
+@Composable
+private fun ManagePlaylistDialog(
+ group: MusicGroup,
+ tracks: List<Track>,
+ onDismiss: () -> Unit,
+ onRename: (String) -> Unit,
+ onMove: (Int, Int) -> Unit,
+ onRemove: (Long) -> Unit,
+ onDelete: () -> Unit
+) {
+ var name by remember(group.id) { mutableStateOf(group.name) }
+ val tracksById = remember(tracks) { tracks.associateBy(Track::id) }
+ AlertDialog(
+  onDismissRequest = onDismiss,
+  title = { Text("플레이리스트 편집", color = Color.White) },
+  text = {
+   Column {
+    OutlinedTextField(
+     value = name,
+     onValueChange = { if (it.length <= 40) name = it },
+     label = { Text("이름") },
+     singleLine = true,
+     trailingIcon = {
+      IconButton(enabled = name.isNotBlank() && name.trim() != group.name, onClick = { onRename(name) }) {
+       Icon(Icons.Default.DriveFileRenameOutline, contentDescription = "Rename", tint = Ultramarine)
+      }
+     }
+    )
+    Text("곡 순서", color = SecondaryText, fontSize = 10.sp, modifier = Modifier.padding(top = 16.dp, bottom = 5.dp))
+    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 330.dp)) {
+     itemsIndexed(group.trackIds, key = { _, id -> id }) { index, id ->
+      val track = tracksById[id]
+      Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+       Column(Modifier.weight(1f)) {
+        Text(track?.title ?: "찾을 수 없는 곡", color = if (track == null) Color(0xFFFF8A8A) else Color.White, fontSize = 11.sp, maxLines = 1)
+        Text(track?.artist ?: "라이브러리에서 누락됨", color = SecondaryText, fontSize = 9.sp, maxLines = 1)
+       }
+       IconButton(enabled = index > 0, onClick = { onMove(index, index - 1) }) {
+        Icon(Icons.Default.ArrowUpward, contentDescription = "Move up", tint = if (index > 0) SecondaryText else Color(0xFF343A48), modifier = Modifier.size(16.dp))
+       }
+       IconButton(enabled = index < group.trackIds.lastIndex, onClick = { onMove(index, index + 1) }) {
+        Icon(Icons.Default.ArrowDownward, contentDescription = "Move down", tint = if (index < group.trackIds.lastIndex) SecondaryText else Color(0xFF343A48), modifier = Modifier.size(16.dp))
+       }
+       IconButton(onClick = { onRemove(id) }) {
+        Icon(Icons.Default.DeleteOutline, contentDescription = "Remove", tint = Color(0xFFAF6670), modifier = Modifier.size(16.dp))
+       }
+      }
+     }
+    }
+    TextButton(onClick = onDelete, modifier = Modifier.align(Alignment.End)) {
+     Text("플레이리스트 삭제", color = Color(0xFFFF6B6B), fontSize = 10.sp)
+    }
+   }
+  },
+  confirmButton = { TextButton(onClick = { if (name.isNotBlank() && name.trim() != group.name) onRename(name); onDismiss() }) { Text("완료", color = Ultramarine) } },
+  containerColor = Color(0xFF080C16)
+ )
+}
+
+@Composable
+private fun MusicFolderDialog(
+ folders: List<Uri>,
+ onDismiss: () -> Unit,
+ onAdd: () -> Unit,
+ onRemove: (Uri) -> Unit
+) {
+ AlertDialog(
+  onDismissRequest = onDismiss,
+  title = { Text("음악 폴더", color = Color.White) },
+  text = {
+   Column {
+    Text("선택한 폴더의 음악만 추가되며 파일 자체는 변경되지 않습니다.", color = SecondaryText, fontSize = 10.sp)
+    if (folders.isEmpty()) Text("추가한 폴더가 없습니다.", color = SecondaryText, fontSize = 11.sp, modifier = Modifier.padding(vertical = 18.dp))
+    folders.forEach { uri ->
+     Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+      Text(Uri.decode(uri.lastPathSegment ?: uri.toString()), color = Color.White, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+      IconButton(onClick = { onRemove(uri) }) {
+       Icon(Icons.Default.DeleteOutline, contentDescription = "Remove folder", tint = Color(0xFFAF6670), modifier = Modifier.size(17.dp))
+      }
+     }
+    }
+   }
+  },
+  confirmButton = { TextButton(onClick = onAdd) { Text("폴더 추가", color = Ultramarine) } },
+  dismissButton = { TextButton(onClick = onDismiss) { Text("완료", color = SecondaryText) } },
   containerColor = Color(0xFF080C16)
  )
 }
@@ -1007,11 +1179,24 @@ private fun PlaybackQueueDialog(player: Player, onDismiss: () -> Unit) {
       ) {
        Icon(Icons.Default.ArrowDownward, contentDescription = "Move down", tint = if (index < items.lastIndex) SecondaryText else Color(0xFF343A48), modifier = Modifier.size(17.dp))
       }
+      IconButton(onClick = { player.removeMediaItem(index); revision++ }) {
+       Icon(Icons.Default.DeleteOutline, contentDescription = "Remove from queue", tint = Color(0xFFAF6670), modifier = Modifier.size(17.dp))
+      }
      }
     }
    }
   },
   confirmButton = { TextButton(onClick = onDismiss) { Text("완료", color = Ultramarine) } },
+  dismissButton = {
+   TextButton(
+    enabled = player.currentMediaItemIndex in 0 until player.mediaItemCount - 1,
+    onClick = {
+     val firstUpcoming = player.currentMediaItemIndex + 1
+     if (firstUpcoming in 0 until player.mediaItemCount) player.removeMediaItems(firstUpcoming, player.mediaItemCount)
+     revision++
+    }
+   ) { Text("다음 곡 모두 지우기", color = SecondaryText, fontSize = 10.sp) }
+  },
   containerColor = Color(0xFF080C16)
  )
 }

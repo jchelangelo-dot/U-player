@@ -26,8 +26,13 @@ class ParametricEqAudioProcessor(
  private var appliedLiveStage: LiveStageSettings? = null
  private var filters: Array<Biquad> = emptyArray()
  private var channelStates: Array<Array<FilterState>> = emptyArray()
- private var linearPreamp = 1.0
+ private var targetLinearPreamp = 1.0
+ private var smoothedLinearPreamp = 1.0
+ private var preampSmoothing = 1.0
  private var stageProcessor: SpatialStageProcessor? = null
+ private var previousStageProcessor: SpatialStageProcessor? = null
+ private var stageTransitionFrames = 0
+ private var limiter = LinkedPeakLimiter()
 
  fun updateSettings(settings: EqSettings) {
   settingsReference.set(settings)
@@ -44,6 +49,8 @@ class ParametricEqAudioProcessor(
     inputAudioFormat
    )
   }
+  preampSmoothing = 1.0 - kotlin.math.exp(-1.0 / (inputAudioFormat.sampleRate * 0.012))
+  limiter.configure(inputAudioFormat.sampleRate)
   return inputAudioFormat
  }
 
@@ -57,26 +64,30 @@ class ParametricEqAudioProcessor(
    configureFilters(settings)
   }
   if (liveStage != appliedLiveStage || stageProcessor == null) {
-   stageProcessor = SpatialStageProcessor(inputAudioFormat.sampleRate, liveStage)
+   val replacement = SpatialStageProcessor(inputAudioFormat.sampleRate, liveStage)
+   if (stageProcessor != null && appliedLiveStage != null) {
+    previousStageProcessor = stageProcessor
+    stageTransitionFrames = STAGE_TRANSITION_FRAMES
+   }
+   stageProcessor = replacement
    appliedLiveStage = liveStage
   }
 
   val output = replaceOutputBuffer(inputBuffer.remaining())
-  if (!settings.enabled && !liveStage.enabled) {
+  if (!settings.enabled && !liveStage.enabled && previousStageProcessor == null && !settings.limiterEnabled) {
    output.put(inputBuffer)
    output.flip()
    return
   }
 
   while (inputBuffer.hasRemaining()) {
+   smoothedLinearPreamp += (targetLinearPreamp - smoothedLinearPreamp) * preampSmoothing
    val frame = DoubleArray(inputAudioFormat.channelCount) { channel ->
-    val input = when (inputAudioFormat.encoding) {
-     C.ENCODING_PCM_16BIT -> inputBuffer.getShort() / 32768.0
-     C.ENCODING_PCM_FLOAT -> inputBuffer.getFloat().toDouble()
-     else -> 0.0
-    }
+    val input = if (inputAudioFormat.encoding == C.ENCODING_PCM_16BIT) {
+     inputBuffer.getShort() / 32768.0
+    } else inputBuffer.getFloat().toDouble()
     if (settings.enabled) {
-     var processed = input * linearPreamp
+     var processed = input * smoothedLinearPreamp
      filters.forEachIndexed { index, filter ->
       processed = filter.process(processed, channelStates[channel][index])
      }
@@ -85,14 +96,13 @@ class ParametricEqAudioProcessor(
      input
     }
    }
-   if (liveStage.enabled) stageProcessor?.process(frame)
+   processStage(frame, liveStage.enabled)
+   if (settings.limiterEnabled) limiter.process(frame) else limiter.reset()
    repeat(inputAudioFormat.channelCount) { channel ->
-    var processed = frame[channel]
-    if (settings.limiterEnabled) processed = processed.coerceIn(-0.98, 0.98)
-    when (inputAudioFormat.encoding) {
-     C.ENCODING_PCM_16BIT -> output.putShort((processed.coerceIn(-1.0, 1.0) * 32767.0).toInt().toShort())
-     C.ENCODING_PCM_FLOAT -> output.putFloat(processed.coerceIn(-1.0, 1.0).toFloat())
-    }
+    val processed = frame[channel]
+    if (inputAudioFormat.encoding == C.ENCODING_PCM_16BIT) {
+     output.putShort((processed.coerceIn(-1.0, 1.0) * 32767.0).toInt().toShort())
+    } else output.putFloat(processed.coerceIn(-1.0, 1.0).toFloat())
    }
   }
   output.flip()
@@ -101,6 +111,10 @@ class ParametricEqAudioProcessor(
  override fun onFlush() {
   clearStates()
   stageProcessor?.clear()
+  previousStageProcessor?.clear()
+  previousStageProcessor = null
+  stageTransitionFrames = 0
+  limiter.reset()
  }
 
  override fun onReset() {
@@ -109,12 +123,16 @@ class ParametricEqAudioProcessor(
   channelStates = emptyArray()
   appliedLiveStage = null
   stageProcessor = null
+  previousStageProcessor = null
+  stageTransitionFrames = 0
+  limiter.reset()
  }
 
  private fun configureFilters(settings: EqSettings) {
   val sampleRate = inputAudioFormat.sampleRate.toDouble()
   filters = settings.bands.map { Biquad.create(it, sampleRate) }.toTypedArray()
-  linearPreamp = 10.0.pow(settings.effectivePreampDb / 20.0)
+  targetLinearPreamp = 10.0.pow(settings.effectivePreampDb / 20.0)
+  if (appliedSettings == null) smoothedLinearPreamp = targetLinearPreamp
   if (channelStates.size != inputAudioFormat.channelCount || channelStates.firstOrNull()?.size != filters.size) {
    channelStates = Array(inputAudioFormat.channelCount) { Array(filters.size) { FilterState() } }
   }
@@ -124,11 +142,63 @@ class ParametricEqAudioProcessor(
  private fun clearStates() {
   channelStates.forEach { channel -> channel.forEach(FilterState::clear) }
  }
+
+ private fun processStage(frame: DoubleArray, enabled: Boolean) {
+  val previous = previousStageProcessor
+  if (previous != null && stageTransitionFrames > 0) {
+   val oldFrame = frame.copyOf()
+   val newFrame = frame.copyOf()
+   if (previous.settings.enabled) previous.process(oldFrame)
+   if (enabled) stageProcessor?.process(newFrame)
+   val mix = 1.0 - stageTransitionFrames.toDouble() / STAGE_TRANSITION_FRAMES
+   frame.indices.forEach { channel ->
+    frame[channel] = oldFrame[channel] * (1.0 - mix) + newFrame[channel] * mix
+   }
+   stageTransitionFrames--
+   if (stageTransitionFrames == 0) previousStageProcessor = null
+  } else if (enabled) {
+   stageProcessor?.process(frame)
+  }
+ }
+
+ private companion object {
+  const val STAGE_TRANSITION_FRAMES = 1_024
+ }
+}
+
+/** Stereo-linked limiter: both channels keep the same gain so the sound image does not move. */
+internal class LinkedPeakLimiter {
+ private var gain = 1.0
+ private var releaseCoefficient = 0.0
+
+ fun configure(sampleRate: Int) {
+  releaseCoefficient = kotlin.math.exp(-1.0 / (sampleRate * 0.22))
+  reset()
+ }
+
+ fun process(frame: DoubleArray) {
+  val peak = frame.maxOfOrNull { abs(it) } ?: return
+  val targetGain = if (peak > LIMITER_CEILING) LIMITER_CEILING / peak else 1.0
+  gain = if (targetGain < gain) {
+   targetGain // instant attack prevents a transient from hard-clipping
+  } else {
+   targetGain + releaseCoefficient * (gain - targetGain)
+  }
+  frame.indices.forEach { channel -> frame[channel] *= gain }
+ }
+
+ fun reset() {
+  gain = 1.0
+ }
+
+ private companion object {
+  const val LIMITER_CEILING = 0.96
+ }
 }
 
 private class SpatialStageProcessor(
  private val sampleRate: Int,
- private val settings: LiveStageSettings
+ val settings: LiveStageSettings
 ) {
  private val maxDelay = (sampleRate * 0.18f).toInt().coerceAtLeast(1)
  private val leftDelay = DoubleArray(maxDelay)

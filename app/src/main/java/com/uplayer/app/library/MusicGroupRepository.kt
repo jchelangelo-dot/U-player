@@ -8,7 +8,7 @@ import java.util.UUID
 data class MusicGroup(
  val id: String,
  val name: String,
- val trackIds: Set<Long>
+ val trackIds: List<Long>
 )
 
 class MusicGroupRepository(context: Context) {
@@ -24,9 +24,9 @@ class MusicGroupRepository(context: Context) {
      MusicGroup(
       id = item.getString("id"),
       name = item.getString("name"),
-      trackIds = buildSet {
+      trackIds = buildList {
        for (trackIndex in 0 until ids.length()) add(ids.getLong(trackIndex))
-      }
+      }.distinct()
      )
     )
    }
@@ -36,15 +36,32 @@ class MusicGroupRepository(context: Context) {
  fun create(name: String, current: List<MusicGroup>): List<MusicGroup> {
   val cleanName = name.trim().take(40)
   if (cleanName.isEmpty()) return current
-  return (current + MusicGroup(UUID.randomUUID().toString(), cleanName, emptySet())).also(::save)
+  return (current + MusicGroup(UUID.randomUUID().toString(), cleanName, emptyList())).also(::save)
  }
 
  fun update(group: MusicGroup, current: List<MusicGroup>): List<MusicGroup> =
   current.map { if (it.id == group.id) group else it }.also(::save)
 
- fun addTracks(groupId: String, trackIds: Set<Long>, current: List<MusicGroup>): List<MusicGroup> =
+ fun addTracks(groupId: String, trackIds: Collection<Long>, current: List<MusicGroup>): List<MusicGroup> =
   current.map { group ->
-   if (group.id == groupId) group.copy(trackIds = group.trackIds + trackIds) else group
+   if (group.id == groupId) group.copy(trackIds = (group.trackIds + trackIds).distinct()) else group
+  }.also(::save)
+
+ fun rename(groupId: String, name: String, current: List<MusicGroup>): List<MusicGroup> {
+  val cleanName = name.trim().take(40)
+  if (cleanName.isEmpty()) return current
+  return current.map { if (it.id == groupId) it.copy(name = cleanName) else it }.also(::save)
+ }
+
+ fun moveTrack(groupId: String, fromIndex: Int, toIndex: Int, current: List<MusicGroup>): List<MusicGroup> =
+  current.map { group ->
+   if (group.id != groupId || fromIndex !in group.trackIds.indices || toIndex !in group.trackIds.indices) group
+   else group.copy(trackIds = group.trackIds.toMutableList().apply { add(toIndex, removeAt(fromIndex)) })
+  }.also(::save)
+
+ fun removeTrack(groupId: String, trackId: Long, current: List<MusicGroup>): List<MusicGroup> =
+  current.map { group ->
+   if (group.id == groupId) group.copy(trackIds = group.trackIds.filterNot { it == trackId }) else group
   }.also(::save)
 
  fun delete(groupId: String, current: List<MusicGroup>): List<MusicGroup> =

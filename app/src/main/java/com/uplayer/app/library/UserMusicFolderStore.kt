@@ -17,6 +17,12 @@ class UserMusicFolderStore(context: Context) {
   return updated
  }
 
+ fun remove(uri: Uri): List<Uri> {
+  val updated = load().filterNot { it == uri }
+  preferences.edit().putStringSet(KEY_FOLDERS, updated.map(Uri::toString).toSet()).apply()
+  return updated
+ }
+
  private companion object {
   const val KEY_FOLDERS = "folders"
  }
